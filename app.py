@@ -170,10 +170,21 @@ def get_certificate_expiry(cert_name: str):
 
 
 def build_domains(domain_name: str, include_wildcard: bool):
-    base_domain = normalize_domain(domain_name)
-    domains = [base_domain]
-    if include_wildcard:
-        domains.append(f"*.{base_domain}")
+    base_domains = parse_domain_names(domain_name)
+    if not base_domains:
+        single = normalize_domain(domain_name)
+        base_domains = [single] if single else []
+
+    domains = []
+    seen = set()
+    for base_domain in base_domains:
+        requested = [base_domain]
+        if include_wildcard:
+            requested.append(f"*.{base_domain}")
+        for item in requested:
+            if item not in seen:
+                domains.append(item)
+                seen.add(item)
     return domains
 
 
@@ -665,33 +676,35 @@ def new_domain():
             return redirect(url_for("new_domain"))
 
         now = datetime.now(timezone.utc).isoformat()
-        created_count = 0
+        primary_domain = domain_names[0]
+        cert_name = sanitize_cert_name(primary_domain)
+        domains_value = ",".join(domain_names)
 
         with db_connection() as conn:
-            for domain_name in domain_names:
-                cert_name = sanitize_cert_name(domain_name)
-                conn.execute(
-                    """
-                    INSERT INTO domains (
-                        domain_name, provider, credential_id, contact_email, include_wildcard,
-                        cloudflare_api_token, aws_access_key_id, aws_secret_access_key, aws_region,
-                        cert_name, last_error, created_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, NULL, ?, ?)
-                    """,
-                    (
-                        domain_name,
-                        provider,
-                        credential_id,
-                        contact_email,
-                        include_wildcard,
-                        cert_name,
-                        now,
-                        now,
-                    ),
-                )
-                created_count += 1
+            conn.execute(
+                """
+                INSERT INTO domains (
+                    domain_name, provider, credential_id, contact_email, include_wildcard,
+                    cloudflare_api_token, aws_access_key_id, aws_secret_access_key, aws_region,
+                    cert_name, last_error, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, NULL, ?, ?)
+                """,
+                (
+                    domains_value,
+                    provider,
+                    credential_id,
+                    contact_email,
+                    include_wildcard,
+                    cert_name,
+                    now,
+                    now,
+                ),
+            )
 
-        flash(f"Se guardaron {created_count} dominios con la credencial {credential['name']}.", "success")
+        flash(
+            f"Se guardó 1 certificado SAN con {len(domain_names)} dominios usando la credencial {credential['name']}.",
+            "success",
+        )
         return redirect(url_for("index"))
 
     credentials = get_credentials()
@@ -761,6 +774,43 @@ def download(domain_id: int):
     memory_file.seek(0)
     filename = f"{row['domain_name']}-certs.zip"
     return send_file(memory_file, as_attachment=True, download_name=filename, mimetype="application/zip")
+
+
+@app.post("/domains/<int:domain_id>/delete")
+@admin_required
+def delete_domain(domain_id: int):
+    row = get_domain_by_id(domain_id)
+    if not row:
+        flash("Registro no encontrado.", "error")
+        return redirect(url_for("index"))
+
+    with db_connection() as conn:
+        conn.execute("DELETE FROM domains WHERE id = ?", (domain_id,))
+
+    flash(f"Se eliminó el registro {row['domain_name']}", "success")
+    return redirect(url_for("index"))
+
+
+@app.post("/domains/cleanup-empty")
+@admin_required
+def cleanup_empty_domains():
+    with db_connection() as conn:
+        rows = conn.execute("SELECT id, cert_name FROM domains").fetchall()
+
+    to_delete_ids = []
+    for row in rows:
+        if get_certificate_expiry(row["cert_name"]) is None:
+            to_delete_ids.append(row["id"])
+
+    if not to_delete_ids:
+        flash("No había registros sin certificado emitido para limpiar.", "success")
+        return redirect(url_for("index"))
+
+    with db_connection() as conn:
+        conn.executemany("DELETE FROM domains WHERE id = ?", [(item_id,) for item_id in to_delete_ids])
+
+    flash(f"Se eliminaron {len(to_delete_ids)} registros sin certificado emitido.", "success")
+    return redirect(url_for("index"))
 
 
 @app.route("/credentials", methods=["GET", "POST"])
