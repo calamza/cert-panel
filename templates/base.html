@@ -145,6 +145,7 @@
         <div class="row" style="justify-content: flex-end;">
           <a class="btn" href="{{ url_for('index') }}">Inicio</a>
           {% if can_manage %}
+            <a class="btn" href="{{ url_for('credentials') }}">Credenciales DNS</a>
             <a class="btn" href="{{ url_for('users') }}">Usuarios</a>
           {% endif %}
           <form method="post" action="{{ url_for('logout') }}" style="margin:0;">

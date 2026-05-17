@@ -4,9 +4,9 @@
   <form method="post">
     <div class="grid">
       <div>
-        <label for="domain_name">Dominio base</label>
-        <input id="domain_name" name="domain_name" placeholder="ej: dominio.com o dominio.com.ar" required>
-        <div class="small">No pongas *., eso lo controla la opción wildcard.</div>
+        <label for="domain_names">Dominios (uno por línea o separados por coma)</label>
+        <textarea id="domain_names" name="domain_names" rows="4" style="width:100%; box-sizing:border-box; border:1px solid var(--line); border-radius:10px; padding:10px; margin-bottom:12px; font-size:0.95rem;" required placeholder="confiber.com.ar\nmzadronagro.com.ar"></textarea>
+        <div class="small">No pongas *., eso lo controla la opción wildcard y se aplica a todos los dominios cargados.</div>
       </div>
 
       <div>
@@ -16,10 +16,20 @@
 
       <div>
         <label for="provider">Proveedor DNS</label>
-        <select id="provider" name="provider" required>
+        <select id="provider" name="provider" required onchange="filterCredentials()">
           <option value="cloudflare">Cloudflare</option>
           <option value="aws">AWS Route53</option>
         </select>
+      </div>
+
+      <div>
+        <label for="credential_id">Credencial DNS preconfigurada</label>
+        <select id="credential_id" name="credential_id" required>
+          {% for cred in credentials %}
+            <option value="{{ cred.id }}" data-provider="{{ cred.provider }}">{{ cred.name }} ({{ cred.provider }})</option>
+          {% endfor %}
+        </select>
+        <div class="small">Estas credenciales se administran en el menú "Credenciales DNS".</div>
       </div>
 
       <div>
@@ -30,34 +40,42 @@
       </div>
     </div>
 
-    <h3>Credenciales Cloudflare</h3>
-    <div class="grid">
-      <div>
-        <label for="cloudflare_api_token">API Token</label>
-        <input id="cloudflare_api_token" name="cloudflare_api_token" placeholder="Solo para proveedor Cloudflare">
-      </div>
-    </div>
-
-    <h3>Credenciales AWS (IAM + Route53)</h3>
-    <div class="grid">
-      <div>
-        <label for="aws_access_key_id">AWS Access Key ID</label>
-        <input id="aws_access_key_id" name="aws_access_key_id" placeholder="Solo para proveedor AWS">
-      </div>
-      <div>
-        <label for="aws_secret_access_key">AWS Secret Access Key</label>
-        <input id="aws_secret_access_key" name="aws_secret_access_key" placeholder="Solo para proveedor AWS">
-      </div>
-      <div>
-        <label for="aws_region">AWS Region (opcional)</label>
-        <input id="aws_region" name="aws_region" placeholder="us-east-1">
-      </div>
-    </div>
-
     <div class="row">
       <button type="submit" class="btn primary">Guardar dominio</button>
       <a href="{{ url_for('index') }}" class="btn">Volver</a>
     </div>
   </form>
+
+  {% if not credentials %}
+    <div class="flash error" style="margin-top:12px;">
+      No hay credenciales DNS cargadas. Primero agregá una en <a href="{{ url_for('credentials') }}">Credenciales DNS</a>.
+    </div>
+  {% endif %}
 </div>
+
+<script>
+  function filterCredentials() {
+    const provider = document.getElementById('provider').value;
+    const select = document.getElementById('credential_id');
+    let firstVisible = null;
+
+    for (const option of select.options) {
+      const visible = option.dataset.provider === provider;
+      option.hidden = !visible;
+      if (visible && !firstVisible) {
+        firstVisible = option;
+      }
+    }
+
+    if (firstVisible) {
+      select.value = firstVisible.value;
+      select.disabled = false;
+    } else {
+      select.value = '';
+      select.disabled = true;
+    }
+  }
+
+  filterCredentials();
+</script>
 {% endblock %}

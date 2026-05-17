@@ -1,5 +1,6 @@
 import io
 import os
+import re
 import sqlite3
 import subprocess
 import zipfile
@@ -74,6 +75,7 @@ def init_storage():
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 domain_name TEXT NOT NULL,
                 provider TEXT NOT NULL CHECK (provider IN ('cloudflare', 'aws')),
+                credential_id INTEGER,
                 contact_email TEXT NOT NULL,
                 include_wildcard INTEGER NOT NULL DEFAULT 0,
                 cloudflare_api_token TEXT,
@@ -82,6 +84,26 @@ def init_storage():
                 aws_region TEXT,
                 cert_name TEXT NOT NULL,
                 last_error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (credential_id) REFERENCES dns_credentials(id)
+            )
+            """
+        )
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(domains)").fetchall()}
+        if "credential_id" not in columns:
+            conn.execute("ALTER TABLE domains ADD COLUMN credential_id INTEGER")
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS dns_credentials (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                provider TEXT NOT NULL CHECK (provider IN ('cloudflare', 'aws')),
+                cloudflare_api_token TEXT,
+                aws_access_key_id TEXT,
+                aws_secret_access_key TEXT,
+                aws_region TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
@@ -185,7 +207,11 @@ def certbot_command(domain_row, renew=False):
         base_cmd.append("--keep-until-expiring")
 
     if domain_row["provider"] == "cloudflare":
-        cred_path = write_cloudflare_credentials(domain_row["id"], domain_row["cloudflare_api_token"])
+        cloudflare_api_token = domain_row["cred_cloudflare_api_token"] or domain_row["cloudflare_api_token"]
+        if not cloudflare_api_token:
+            raise ValueError(f"El dominio {domain_row['domain_name']} no tiene API token de Cloudflare configurado.")
+
+        cred_path = write_cloudflare_credentials(domain_row["id"], cloudflare_api_token)
         base_cmd.extend(
             [
                 "--dns-cloudflare",
@@ -194,6 +220,10 @@ def certbot_command(domain_row, renew=False):
             ]
         )
     else:
+        aws_access_key_id = domain_row["cred_aws_access_key_id"] or domain_row["aws_access_key_id"]
+        aws_secret_access_key = domain_row["cred_aws_secret_access_key"] or domain_row["aws_secret_access_key"]
+        if not aws_access_key_id or not aws_secret_access_key:
+            raise ValueError(f"El dominio {domain_row['domain_name']} no tiene credenciales de AWS Route53 configuradas.")
         base_cmd.append("--dns-route53")
 
     for item in domains:
@@ -203,14 +233,19 @@ def certbot_command(domain_row, renew=False):
 
 
 def run_certbot(domain_row, renew=False):
-    cmd = certbot_command(domain_row, renew=renew)
+    try:
+        cmd = certbot_command(domain_row, renew=renew)
+    except ValueError as exc:
+        return False, str(exc)
+
     env = os.environ.copy()
 
     if domain_row["provider"] == "aws":
-        env["AWS_ACCESS_KEY_ID"] = domain_row["aws_access_key_id"] or ""
-        env["AWS_SECRET_ACCESS_KEY"] = domain_row["aws_secret_access_key"] or ""
-        if domain_row["aws_region"]:
-            env["AWS_DEFAULT_REGION"] = domain_row["aws_region"]
+        env["AWS_ACCESS_KEY_ID"] = domain_row["cred_aws_access_key_id"] or domain_row["aws_access_key_id"] or ""
+        env["AWS_SECRET_ACCESS_KEY"] = domain_row["cred_aws_secret_access_key"] or domain_row["aws_secret_access_key"] or ""
+        aws_region = domain_row["cred_aws_region"] or domain_row["aws_region"]
+        if aws_region:
+            env["AWS_DEFAULT_REGION"] = aws_region
 
     result = subprocess.run(cmd, capture_output=True, text=True, env=env)
     ok = result.returncode == 0
@@ -220,7 +255,20 @@ def run_certbot(domain_row, renew=False):
 
 def list_domains():
     with db_connection() as conn:
-        rows = conn.execute("SELECT * FROM domains ORDER BY domain_name").fetchall()
+        rows = conn.execute(
+            """
+            SELECT
+                d.*,
+                c.name AS credential_name,
+                c.cloudflare_api_token AS cred_cloudflare_api_token,
+                c.aws_access_key_id AS cred_aws_access_key_id,
+                c.aws_secret_access_key AS cred_aws_secret_access_key,
+                c.aws_region AS cred_aws_region
+            FROM domains d
+            LEFT JOIN dns_credentials c ON c.id = d.credential_id
+            ORDER BY d.domain_name
+            """
+        ).fetchall()
 
     items = []
     now = datetime.now(timezone.utc)
@@ -235,6 +283,7 @@ def list_domains():
                 "id": row["id"],
                 "domain_name": row["domain_name"],
                 "provider": row["provider"],
+                "credential_name": row["credential_name"],
                 "contact_email": row["contact_email"],
                 "include_wildcard": bool(row["include_wildcard"]),
                 "cert_name": row["cert_name"],
@@ -258,6 +307,189 @@ def update_last_error(domain_id: int, message: str | None):
 def get_user_by_email(email: str):
     with db_connection() as conn:
         return conn.execute("SELECT * FROM users WHERE email = ?", (email.strip().lower(),)).fetchone()
+
+
+def get_credentials(provider: str | None = None):
+    with db_connection() as conn:
+        if provider:
+            return conn.execute(
+                """
+                SELECT c.*, COUNT(d.id) AS domains_count
+                FROM dns_credentials c
+                LEFT JOIN domains d ON d.credential_id = c.id
+                WHERE c.provider = ?
+                GROUP BY c.id
+                ORDER BY c.name
+                """,
+                (provider,),
+            ).fetchall()
+        return conn.execute(
+            """
+            SELECT c.*, COUNT(d.id) AS domains_count
+            FROM dns_credentials c
+            LEFT JOIN domains d ON d.credential_id = c.id
+            GROUP BY c.id
+            ORDER BY c.provider, c.name
+            """
+        ).fetchall()
+
+
+def get_credential_by_id(credential_id: int):
+    with db_connection() as conn:
+        return conn.execute(
+            """
+            SELECT c.*, COUNT(d.id) AS domains_count
+            FROM dns_credentials c
+            LEFT JOIN domains d ON d.credential_id = c.id
+            WHERE c.id = ?
+            GROUP BY c.id
+            """,
+            (credential_id,),
+        ).fetchone()
+
+
+def get_legacy_domains_without_credential():
+    with db_connection() as conn:
+        return conn.execute(
+            """
+            SELECT *
+            FROM domains
+            WHERE credential_id IS NULL
+              AND (
+                (provider = 'cloudflare' AND COALESCE(cloudflare_api_token, '') <> '')
+                OR
+                (provider = 'aws' AND COALESCE(aws_access_key_id, '') <> '' AND COALESCE(aws_secret_access_key, '') <> '')
+              )
+            ORDER BY domain_name
+            """
+        ).fetchall()
+
+
+def migrate_legacy_domain_credentials():
+    now = datetime.now(timezone.utc).isoformat()
+    created = 0
+    assigned = 0
+    skipped = 0
+
+    with db_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM domains
+            WHERE credential_id IS NULL
+              AND (
+                (provider = 'cloudflare' AND COALESCE(cloudflare_api_token, '') <> '')
+                OR
+                (provider = 'aws' AND COALESCE(aws_access_key_id, '') <> '' AND COALESCE(aws_secret_access_key, '') <> '')
+              )
+            ORDER BY id
+            """
+        ).fetchall()
+
+        for row in rows:
+            credential_id = None
+            if row["provider"] == "cloudflare":
+                token = row["cloudflare_api_token"]
+                credential = conn.execute(
+                    "SELECT id FROM dns_credentials WHERE provider = 'cloudflare' AND cloudflare_api_token = ? LIMIT 1",
+                    (token,),
+                ).fetchone()
+                if credential:
+                    credential_id = credential["id"]
+                else:
+                    name = f"Migrada CF {row['domain_name']}"
+                    cursor = conn.execute(
+                        """
+                        INSERT INTO dns_credentials (
+                            name, provider, cloudflare_api_token, aws_access_key_id,
+                            aws_secret_access_key, aws_region, created_at, updated_at
+                        ) VALUES (?, 'cloudflare', ?, NULL, NULL, NULL, ?, ?)
+                        """,
+                        (name, token, now, now),
+                    )
+                    credential_id = cursor.lastrowid
+                    created += 1
+            elif row["provider"] == "aws":
+                access = row["aws_access_key_id"]
+                secret = row["aws_secret_access_key"]
+                region = row["aws_region"] or ""
+                credential = conn.execute(
+                    """
+                    SELECT id
+                    FROM dns_credentials
+                    WHERE provider = 'aws'
+                      AND aws_access_key_id = ?
+                      AND aws_secret_access_key = ?
+                      AND COALESCE(aws_region, '') = ?
+                    LIMIT 1
+                    """,
+                    (access, secret, region),
+                ).fetchone()
+                if credential:
+                    credential_id = credential["id"]
+                else:
+                    name = f"Migrada AWS {row['domain_name']}"
+                    cursor = conn.execute(
+                        """
+                        INSERT INTO dns_credentials (
+                            name, provider, cloudflare_api_token, aws_access_key_id,
+                            aws_secret_access_key, aws_region, created_at, updated_at
+                        ) VALUES (?, 'aws', NULL, ?, ?, ?, ?, ?)
+                        """,
+                        (name, access, secret, row["aws_region"], now, now),
+                    )
+                    credential_id = cursor.lastrowid
+                    created += 1
+
+            if not credential_id:
+                skipped += 1
+                continue
+
+            conn.execute(
+                """
+                UPDATE domains
+                SET credential_id = ?,
+                    cloudflare_api_token = NULL,
+                    aws_access_key_id = NULL,
+                    aws_secret_access_key = NULL,
+                    aws_region = NULL,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (credential_id, now, row["id"]),
+            )
+            assigned += 1
+
+    return created, assigned, skipped
+
+
+def get_domain_by_id(domain_id: int):
+    with db_connection() as conn:
+        return conn.execute(
+            """
+            SELECT
+                d.*,
+                c.name AS credential_name,
+                c.cloudflare_api_token AS cred_cloudflare_api_token,
+                c.aws_access_key_id AS cred_aws_access_key_id,
+                c.aws_secret_access_key AS cred_aws_secret_access_key,
+                c.aws_region AS cred_aws_region
+            FROM domains d
+            LEFT JOIN dns_credentials c ON c.id = d.credential_id
+            WHERE d.id = ?
+            """,
+            (domain_id,),
+        ).fetchone()
+
+
+def parse_domain_names(raw_value: str):
+    items = []
+    for token in re.split(r"[\n,;]+", raw_value or ""):
+        clean = normalize_domain(token)
+        if clean:
+            items.append(clean)
+    # Mantiene orden y elimina duplicados.
+    return list(dict.fromkeys(items))
 
 
 def current_user():
@@ -315,7 +547,19 @@ def monitor_and_renew():
 
     try:
         with db_connection() as conn:
-            rows = conn.execute("SELECT * FROM domains").fetchall()
+            rows = conn.execute(
+                """
+                SELECT
+                    d.*,
+                    c.name AS credential_name,
+                    c.cloudflare_api_token AS cred_cloudflare_api_token,
+                    c.aws_access_key_id AS cred_aws_access_key_id,
+                    c.aws_secret_access_key AS cred_aws_secret_access_key,
+                    c.aws_region AS cred_aws_region
+                FROM domains d
+                LEFT JOIN dns_credentials c ON c.id = d.credential_id
+                """
+            ).fetchall()
 
         for row in rows:
             expires_at = get_certificate_expiry(row["cert_name"])
@@ -395,66 +639,69 @@ def logout():
 @admin_required
 def new_domain():
     if request.method == "POST":
-        domain_name = normalize_domain(request.form.get("domain_name", ""))
+        domain_names = parse_domain_names(request.form.get("domain_names", ""))
         provider = request.form.get("provider", "").strip().lower()
         contact_email = request.form.get("contact_email", "").strip().lower()
         include_wildcard = 1 if request.form.get("include_wildcard") == "on" else 0
+        credential_id_value = request.form.get("credential_id", "").strip()
 
-        cloudflare_api_token = request.form.get("cloudflare_api_token", "").strip()
-        aws_access_key_id = request.form.get("aws_access_key_id", "").strip()
-        aws_secret_access_key = request.form.get("aws_secret_access_key", "").strip()
-        aws_region = request.form.get("aws_region", "").strip()
-
-        if not domain_name or not provider or not contact_email:
-            flash("Completá dominio, proveedor y email de contacto.", "error")
+        if not domain_names or not provider or not contact_email or not credential_id_value:
+            flash("Completá dominios, proveedor, credencial DNS y email de contacto.", "error")
             return redirect(url_for("new_domain"))
 
-        if provider == "cloudflare" and not cloudflare_api_token:
-            flash("Para Cloudflare tenés que informar un API token.", "error")
+        if provider not in {"cloudflare", "aws"}:
+            flash("Proveedor inválido.", "error")
             return redirect(url_for("new_domain"))
 
-        if provider == "aws" and (not aws_access_key_id or not aws_secret_access_key):
-            flash("Para AWS tenés que informar Access Key ID y Secret Access Key.", "error")
+        try:
+            credential_id = int(credential_id_value)
+        except ValueError:
+            flash("La credencial DNS seleccionada no es válida.", "error")
             return redirect(url_for("new_domain"))
 
-        cert_name = sanitize_cert_name(domain_name)
+        credential = get_credential_by_id(credential_id)
+        if not credential or credential["provider"] != provider:
+            flash("La credencial DNS seleccionada no corresponde al proveedor elegido.", "error")
+            return redirect(url_for("new_domain"))
+
         now = datetime.now(timezone.utc).isoformat()
+        created_count = 0
 
         with db_connection() as conn:
-            conn.execute(
-                """
-                INSERT INTO domains (
-                    domain_name, provider, contact_email, include_wildcard,
-                    cloudflare_api_token, aws_access_key_id, aws_secret_access_key, aws_region,
-                    cert_name, last_error, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
-                """,
-                (
-                    domain_name,
-                    provider,
-                    contact_email,
-                    include_wildcard,
-                    cloudflare_api_token or None,
-                    aws_access_key_id or None,
-                    aws_secret_access_key or None,
-                    aws_region or None,
-                    cert_name,
-                    now,
-                    now,
-                ),
-            )
+            for domain_name in domain_names:
+                cert_name = sanitize_cert_name(domain_name)
+                conn.execute(
+                    """
+                    INSERT INTO domains (
+                        domain_name, provider, credential_id, contact_email, include_wildcard,
+                        cloudflare_api_token, aws_access_key_id, aws_secret_access_key, aws_region,
+                        cert_name, last_error, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, NULL, ?, ?)
+                    """,
+                    (
+                        domain_name,
+                        provider,
+                        credential_id,
+                        contact_email,
+                        include_wildcard,
+                        cert_name,
+                        now,
+                        now,
+                    ),
+                )
+                created_count += 1
 
-        flash("Dominio guardado. Ya podés emitir el certificado.", "success")
+        flash(f"Se guardaron {created_count} dominios con la credencial {credential['name']}.", "success")
         return redirect(url_for("index"))
 
-    return render_template("domain_form.html")
+    credentials = get_credentials()
+    return render_template("domain_form.html", credentials=credentials)
 
 
 @app.post("/domains/<int:domain_id>/issue")
 @admin_required
 def issue(domain_id: int):
-    with db_connection() as conn:
-        row = conn.execute("SELECT * FROM domains WHERE id = ?", (domain_id,)).fetchone()
+    row = get_domain_by_id(domain_id)
 
     if not row:
         flash("Dominio no encontrado.", "error")
@@ -474,8 +721,7 @@ def issue(domain_id: int):
 @app.post("/domains/<int:domain_id>/renew")
 @admin_required
 def renew(domain_id: int):
-    with db_connection() as conn:
-        row = conn.execute("SELECT * FROM domains WHERE id = ?", (domain_id,)).fetchone()
+    row = get_domain_by_id(domain_id)
 
     if not row:
         flash("Dominio no encontrado.", "error")
@@ -495,8 +741,7 @@ def renew(domain_id: int):
 @app.get("/domains/<int:domain_id>/download")
 @login_required
 def download(domain_id: int):
-    with db_connection() as conn:
-        row = conn.execute("SELECT * FROM domains WHERE id = ?", (domain_id,)).fetchone()
+    row = get_domain_by_id(domain_id)
 
     if not row:
         flash("Dominio no encontrado.", "error")
@@ -516,6 +761,152 @@ def download(domain_id: int):
     memory_file.seek(0)
     filename = f"{row['domain_name']}-certs.zip"
     return send_file(memory_file, as_attachment=True, download_name=filename, mimetype="application/zip")
+
+
+@app.route("/credentials", methods=["GET", "POST"])
+@admin_required
+def credentials():
+    if request.method == "POST":
+        provider = request.form.get("provider", "").strip().lower()
+        name = request.form.get("name", "").strip()
+        cloudflare_api_token = request.form.get("cloudflare_api_token", "").strip()
+        aws_access_key_id = request.form.get("aws_access_key_id", "").strip()
+        aws_secret_access_key = request.form.get("aws_secret_access_key", "").strip()
+        aws_region = request.form.get("aws_region", "").strip()
+
+        if provider not in {"cloudflare", "aws"}:
+            flash("Proveedor inválido para la credencial.", "error")
+            return redirect(url_for("credentials"))
+
+        if not name:
+            flash("La credencial debe tener un nombre descriptivo.", "error")
+            return redirect(url_for("credentials"))
+
+        if provider == "cloudflare" and not cloudflare_api_token:
+            flash("Para Cloudflare tenés que informar API token.", "error")
+            return redirect(url_for("credentials"))
+
+        if provider == "aws" and (not aws_access_key_id or not aws_secret_access_key):
+            flash("Para AWS tenés que informar Access Key ID y Secret Access Key.", "error")
+            return redirect(url_for("credentials"))
+
+        now = datetime.now(timezone.utc).isoformat()
+        with db_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO dns_credentials (
+                    name, provider, cloudflare_api_token, aws_access_key_id,
+                    aws_secret_access_key, aws_region, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    name,
+                    provider,
+                    cloudflare_api_token or None,
+                    aws_access_key_id or None,
+                    aws_secret_access_key or None,
+                    aws_region or None,
+                    now,
+                    now,
+                ),
+            )
+        flash("Credencial guardada correctamente.", "success")
+        return redirect(url_for("credentials"))
+
+    return render_template(
+        "credentials.html",
+        cloudflare_credentials=get_credentials("cloudflare"),
+        aws_credentials=get_credentials("aws"),
+        legacy_domains=get_legacy_domains_without_credential(),
+    )
+
+
+@app.post("/credentials/<int:credential_id>/update")
+@admin_required
+def update_credential(credential_id: int):
+    credential = get_credential_by_id(credential_id)
+    if not credential:
+        flash("Credencial no encontrada.", "error")
+        return redirect(url_for("credentials"))
+
+    name = request.form.get("name", "").strip()
+    if not name:
+        flash("El nombre de la credencial es obligatorio.", "error")
+        return redirect(url_for("credentials"))
+
+    now = datetime.now(timezone.utc).isoformat()
+    with db_connection() as conn:
+        if credential["provider"] == "cloudflare":
+            cloudflare_api_token = request.form.get("cloudflare_api_token", "").strip()
+            token_to_save = cloudflare_api_token or credential["cloudflare_api_token"]
+            if not token_to_save:
+                flash("La credencial Cloudflare requiere API token.", "error")
+                return redirect(url_for("credentials"))
+            conn.execute(
+                """
+                UPDATE dns_credentials
+                SET name = ?, cloudflare_api_token = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (name, token_to_save, now, credential_id),
+            )
+        else:
+            aws_access_key_id = request.form.get("aws_access_key_id", "").strip()
+            aws_secret_access_key = request.form.get("aws_secret_access_key", "").strip()
+            aws_region = request.form.get("aws_region", "").strip()
+
+            access_to_save = aws_access_key_id or credential["aws_access_key_id"]
+            secret_to_save = aws_secret_access_key or credential["aws_secret_access_key"]
+            region_to_save = aws_region if aws_region else credential["aws_region"]
+
+            if not access_to_save or not secret_to_save:
+                flash("La credencial AWS requiere Access Key ID y Secret Access Key.", "error")
+                return redirect(url_for("credentials"))
+
+            conn.execute(
+                """
+                UPDATE dns_credentials
+                SET name = ?, aws_access_key_id = ?, aws_secret_access_key = ?, aws_region = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (name, access_to_save, secret_to_save, region_to_save, now, credential_id),
+            )
+
+    flash("Credencial actualizada.", "success")
+    return redirect(url_for("credentials"))
+
+
+@app.post("/credentials/<int:credential_id>/delete")
+@admin_required
+def delete_credential(credential_id: int):
+    credential = get_credential_by_id(credential_id)
+    if not credential:
+        flash("Credencial no encontrada.", "error")
+        return redirect(url_for("credentials"))
+
+    if int(credential["domains_count"] or 0) > 0:
+        flash(
+            f"No se puede borrar {credential['name']} porque está asignada a {credential['domains_count']} dominio(s).",
+            "error",
+        )
+        return redirect(url_for("credentials"))
+
+    with db_connection() as conn:
+        conn.execute("DELETE FROM dns_credentials WHERE id = ?", (credential_id,))
+
+    flash("Credencial eliminada.", "success")
+    return redirect(url_for("credentials"))
+
+
+@app.post("/credentials/migrate-legacy")
+@admin_required
+def migrate_legacy_credentials():
+    created, assigned, skipped = migrate_legacy_domain_credentials()
+    flash(
+        f"Migración finalizada. Credenciales creadas: {created}. Dominios migrados: {assigned}. Omitidos: {skipped}.",
+        "success",
+    )
+    return redirect(url_for("credentials"))
 
 
 @app.route("/users", methods=["GET", "POST"])

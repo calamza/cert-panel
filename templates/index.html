@@ -16,6 +16,7 @@
       <tr>
         <th>Dominio</th>
         <th>Proveedor</th>
+        <th>Credencial DNS</th>
         <th>Vencimiento</th>
         <th>Wildcard</th>
         <th>Acciones</th>
@@ -36,6 +37,13 @@
         </td>
         <td>
           <span class="tag {{ 'cf' if item.provider == 'cloudflare' else 'aws' }}">{{ item.provider }}</span>
+        </td>
+        <td>
+          {% if item.credential_name %}
+            <span class="small">{{ item.credential_name }}</span>
+          {% else %}
+            <span class="small">Sin credencial asignada</span>
+          {% endif %}
         </td>
         <td>
           {% if item.has_cert %}
@@ -63,7 +71,7 @@
     {% endfor %}
     {% if not domains %}
       <tr>
-        <td colspan="5" class="small">Todavía no cargaste dominios.</td>
+        <td colspan="6" class="small">Todavía no cargaste dominios.</td>
       </tr>
     {% endif %}
     </tbody>
