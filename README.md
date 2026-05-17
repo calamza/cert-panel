@@ -31,6 +31,7 @@ cp .env.example .env
 - `INITIAL_ALLOWED_USER_EMAIL` (usuario inicial autorizado)
 - `GOOGLE_CLIENT_ID`
 - `GOOGLE_CLIENT_SECRET`
+- `PUBLIC_BASE_URL` (ej: `https://certpanel.confiber.com.ar`)
 
 3. Ejecutar:
 
@@ -95,6 +96,7 @@ Se guardan en el volumen `certs/letsencrypt`, estructura estándar de certbot:
 
 - `FLASK_SECRET_KEY`: clave de sesión
 - `SESSION_COOKIE_SECURE`: `true` si corrés detrás de HTTPS
+- `PUBLIC_BASE_URL`: URL pública usada para construir el callback OAuth
 - `AUTO_RENEW_DAYS_BEFORE`: umbral de renovación automática (default 30)
 - `AUTO_RENEW_INTERVAL_HOURS`: frecuencia del monitor (default 12)
 - `INITIAL_ALLOWED_USER_EMAIL`: email inicial con permiso
@@ -102,6 +104,18 @@ Se guardan en el volumen `certs/letsencrypt`, estructura estándar de certbot:
 - `GOOGLE_CLIENT_ID`: OAuth client id de Google
 - `GOOGLE_CLIENT_SECRET`: OAuth client secret de Google
 - `GOOGLE_DISCOVERY_URL`: endpoint OpenID (default Google)
+
+## OAuth redirect_uri_mismatch
+
+Si Google devuelve `Error 400: redirect_uri_mismatch`, verificá que:
+- `PUBLIC_BASE_URL` en `.env` coincida con el dominio público real
+- En Google OAuth Client estén cargados:
+   - Origen autorizado: `https://certpanel.confiber.com.ar`
+   - Redirect URI: `https://certpanel.confiber.com.ar/auth/google/callback`
+
+## Runtime productivo
+
+La imagen Docker corre con Gunicorn (WSGI), no con el servidor de desarrollo de Flask.
 
 ## Próximos pasos recomendados
 

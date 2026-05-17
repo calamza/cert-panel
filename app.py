@@ -14,6 +14,7 @@ from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from dotenv import load_dotenv
 from flask import Flask, flash, g, redirect, render_template, request, send_file, session, url_for
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -31,10 +32,12 @@ INITIAL_ALLOWED_USER_ROLE = os.getenv("INITIAL_ALLOWED_USER_ROLE", "admin").stri
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "").strip()
 GOOGLE_DISCOVERY_URL = os.getenv("GOOGLE_DISCOVERY_URL", "https://accounts.google.com/.well-known/openid-configuration")
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
 SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "false").strip().lower() == "true"
 
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "change-this-in-production")
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_SECURE"] = SESSION_COOKIE_SECURE
@@ -348,7 +351,10 @@ def auth_google():
         flash("Google OAuth no está configurado.", "error")
         return redirect(url_for("login"))
 
-    redirect_uri = url_for("auth_google_callback", _external=True)
+    if PUBLIC_BASE_URL:
+        redirect_uri = f"{PUBLIC_BASE_URL}{url_for('auth_google_callback')}"
+    else:
+        redirect_uri = url_for("auth_google_callback", _external=True)
     return oauth.google.authorize_redirect(redirect_uri)
 
 
