@@ -1,0 +1,20 @@
+services:
+  cert-manager:
+    build: .
+    container_name: letsencrypt-panel
+    ports:
+      - "8080:8080"
+    environment:
+      - FLASK_SECRET_KEY=changeme-local
+      - AUTO_RENEW_DAYS_BEFORE=30
+      - AUTO_RENEW_INTERVAL_HOURS=12
+      - CERTBOT_CONFIG_DIR=/etc/letsencrypt
+      - CERTBOT_WORK_DIR=/var/lib/letsencrypt
+      - CERTBOT_LOGS_DIR=/var/log/letsencrypt
+    volumes:
+      - ./data:/app/data
+      - ./credentials:/app/credentials
+      - ./certs/letsencrypt:/etc/letsencrypt
+      - ./certs/work:/var/lib/letsencrypt
+      - ./certs/log:/var/log/letsencrypt
+    restart: unless-stopped

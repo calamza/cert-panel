@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <form method="post">
+    <div class="grid">
+      <div>
+        <label for="domain_name">Dominio base</label>
+        <input id="domain_name" name="domain_name" placeholder="ej: dominio.com o dominio.com.ar" required>
+        <div class="small">No pongas *., eso lo controla la opción wildcard.</div>
+      </div>
+
+      <div>
+        <label for="contact_email">Email contacto Let's Encrypt</label>
+        <input id="contact_email" name="contact_email" type="email" placeholder="admin@dominio.com" required>
+      </div>
+
+      <div>
+        <label for="provider">Proveedor DNS</label>
+        <select id="provider" name="provider" required>
+          <option value="cloudflare">Cloudflare</option>
+          <option value="aws">AWS Route53</option>
+        </select>
+      </div>
+
+      <div>
+        <label>
+          <input type="checkbox" name="include_wildcard">
+          Emitir también wildcard (*.dominio)
+        </label>
+      </div>
+    </div>
+
+    <h3>Credenciales Cloudflare</h3>
+    <div class="grid">
+      <div>
+        <label for="cloudflare_api_token">API Token</label>
+        <input id="cloudflare_api_token" name="cloudflare_api_token" placeholder="Solo para proveedor Cloudflare">
+      </div>
+    </div>
+
+    <h3>Credenciales AWS (IAM + Route53)</h3>
+    <div class="grid">
+      <div>
+        <label for="aws_access_key_id">AWS Access Key ID</label>
+        <input id="aws_access_key_id" name="aws_access_key_id" placeholder="Solo para proveedor AWS">
+      </div>
+      <div>
+        <label for="aws_secret_access_key">AWS Secret Access Key</label>
+        <input id="aws_secret_access_key" name="aws_secret_access_key" placeholder="Solo para proveedor AWS">
+      </div>
+      <div>
+        <label for="aws_region">AWS Region (opcional)</label>
+        <input id="aws_region" name="aws_region" placeholder="us-east-1">
+      </div>
+    </div>
+
+    <div class="row">
+      <button type="submit" class="btn primary">Guardar dominio</button>
+      <a href="{{ url_for('index') }}" class="btn">Volver</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
