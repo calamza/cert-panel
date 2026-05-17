@@ -2,15 +2,10 @@ services:
   cert-manager:
     build: .
     container_name: letsencrypt-panel
+    env_file:
+      - .env
     ports:
-      - "8080:8080"
-    environment:
-      - FLASK_SECRET_KEY=changeme-local
-      - AUTO_RENEW_DAYS_BEFORE=30
-      - AUTO_RENEW_INTERVAL_HOURS=12
-      - CERTBOT_CONFIG_DIR=/etc/letsencrypt
-      - CERTBOT_WORK_DIR=/var/lib/letsencrypt
-      - CERTBOT_LOGS_DIR=/var/log/letsencrypt
+      - "8484:8080"
     volumes:
       - ./data:/app/data
       - ./credentials:/app/credentials

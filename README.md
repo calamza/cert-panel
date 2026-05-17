@@ -1,10 +1,13 @@
-# Let's Encrypt Panel (Cloudflare + AWS Route53)
+# Cert-Panel (Let's Encrypt + Cloudflare/AWS)
 
 Proyecto para gestionar certificados Let's Encrypt con desafío DNS:
 - Cloudflare (API Token)
 - AWS Route53 (credenciales IAM)
 
 Permite:
+- Ingreso con Google OAuth
+- Control de acceso por usuarios permitidos
+- Roles: `admin` (full) y `readonly` (solo descarga)
 - Cargar dominios y proveedor DNS desde un panel web
 - Emitir certificados para `dominio.com`, `dominio.com.ar`, `dominio.ar`, etc.
 - Incluir wildcard (`*.dominio...`) con un checkbox
@@ -18,23 +21,50 @@ Permite:
 
 ## Levantar
 
+1. Copiar variables de entorno:
+
+```bash
+cp .env.example .env
+```
+
+2. Completar en `.env`:
+- `INITIAL_ALLOWED_USER_EMAIL` (usuario inicial autorizado)
+- `GOOGLE_CLIENT_ID`
+- `GOOGLE_CLIENT_SECRET`
+
+3. Ejecutar:
+
 ```bash
 docker compose up -d --build
 ```
 
 Panel: http://localhost:8080
 
-## Flujo
+## Login y permisos
 
-1. Ir a "Agregar dominio"
-2. Cargar:
+- El acceso se hace con Google (`/login`)
+- Solo pueden entrar emails que estén en la tabla `users`
+- En el primer arranque se crea automáticamente el usuario indicado en `INITIAL_ALLOWED_USER_EMAIL`
+- Un `admin` puede:
+   - Agregar dominios
+   - Emitir/renovar certificados
+   - Administrar usuarios
+- Un `readonly` solo puede:
+   - Ver listado
+   - Descargar ZIP de certificados
+
+## Flujo operativo
+
+1. Iniciar sesión con Google
+2. Si sos admin, ir a "Agregar dominio"
+3. Cargar:
    - dominio base (sin `*.`)
    - email de contacto
    - proveedor (`cloudflare` o `aws`)
    - credenciales según proveedor
    - opción wildcard si corresponde
-3. Guardar y luego hacer click en "Emitir"
-4. Descargar con "Descargar ZIP"
+4. Guardar y luego hacer click en "Emitir"
+5. Descargar con "Descargar ZIP"
 
 ## Permisos mínimos sugeridos
 
@@ -64,11 +94,16 @@ Se guardan en el volumen `certs/letsencrypt`, estructura estándar de certbot:
 ## Variables de entorno
 
 - `FLASK_SECRET_KEY`: clave de sesión
+- `SESSION_COOKIE_SECURE`: `true` si corrés detrás de HTTPS
 - `AUTO_RENEW_DAYS_BEFORE`: umbral de renovación automática (default 30)
 - `AUTO_RENEW_INTERVAL_HOURS`: frecuencia del monitor (default 12)
+- `INITIAL_ALLOWED_USER_EMAIL`: email inicial con permiso
+- `INITIAL_ALLOWED_USER_ROLE`: `admin` o `readonly`
+- `GOOGLE_CLIENT_ID`: OAuth client id de Google
+- `GOOGLE_CLIENT_SECRET`: OAuth client secret de Google
+- `GOOGLE_DISCOVERY_URL`: endpoint OpenID (default Google)
 
 ## Próximos pasos recomendados
 
-- Agregar login de usuarios (Flask-Login o reverse proxy)
 - Encriptar credenciales en DB (KMS/Vault)
 - Agregar endpoint de salud y alertas (mail/slack)

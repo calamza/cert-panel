@@ -5,7 +5,9 @@
     <strong>Renovación automática</strong>
     <div class="small">Se intenta renovar cuando faltan {{ renew_days }} días o menos.</div>
   </div>
-  <a class="btn primary" href="{{ url_for('new_domain') }}">Agregar dominio</a>
+  {% if can_manage %}
+    <a class="btn primary" href="{{ url_for('new_domain') }}">Agregar dominio</a>
+  {% endif %}
 </div>
 
 <div class="card">
@@ -46,12 +48,14 @@
         <td>{{ 'Sí' if item.include_wildcard else 'No' }}</td>
         <td>
           <div class="row">
-            <form method="post" action="{{ url_for('issue', domain_id=item.id) }}">
-              <button class="btn" type="submit">Emitir</button>
-            </form>
-            <form method="post" action="{{ url_for('renew', domain_id=item.id) }}">
-              <button class="btn" type="submit">Renovar</button>
-            </form>
+            {% if can_manage %}
+              <form method="post" action="{{ url_for('issue', domain_id=item.id) }}">
+                <button class="btn" type="submit">Emitir</button>
+              </form>
+              <form method="post" action="{{ url_for('renew', domain_id=item.id) }}">
+                <button class="btn" type="submit">Renovar</button>
+              </form>
+            {% endif %}
             <a class="btn warn" href="{{ url_for('download', domain_id=item.id) }}">Descargar ZIP</a>
           </div>
         </td>

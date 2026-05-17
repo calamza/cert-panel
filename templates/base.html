@@ -131,8 +131,29 @@
 </head>
 <body>
 <div class="wrap">
-  <h1 class="title">Gestor de Certificados Let's Encrypt</h1>
-  <p class="subtitle">Panel para dominios en Cloudflare y AWS Route53.</p>
+  <div class="row" style="justify-content: space-between; margin-bottom: 6px;">
+    <div>
+      <h1 class="title" style="margin: 0;">Gestor de Certificados Let's Encrypt</h1>
+      <p class="subtitle">Panel para dominios en Cloudflare y AWS Route53.</p>
+    </div>
+    {% if logged_user %}
+      <div style="text-align: right;">
+        <div class="small" style="margin-bottom: 6px;">
+          {{ logged_user.email }}
+          <span class="tag {{ 'aws' if logged_user.role == 'admin' else 'cf' }}" style="margin-left: 4px;">{{ logged_user.role }}</span>
+        </div>
+        <div class="row" style="justify-content: flex-end;">
+          <a class="btn" href="{{ url_for('index') }}">Inicio</a>
+          {% if can_manage %}
+            <a class="btn" href="{{ url_for('users') }}">Usuarios</a>
+          {% endif %}
+          <form method="post" action="{{ url_for('logout') }}" style="margin:0;">
+            <button class="btn warn" type="submit">Salir</button>
+          </form>
+        </div>
+      </div>
+    {% endif %}
+  </div>
 
   {% with messages = get_flashed_messages(with_categories=true) %}
     {% if messages %}

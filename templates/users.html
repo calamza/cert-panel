@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2 style="margin-top:0;">Usuarios Permitidos</h2>
+  <p class="small">Solo usuarios de esta lista pueden iniciar sesión con Google.</p>
+
+  <form method="post" class="grid" style="margin-bottom: 14px;">
+    <div>
+      <label for="email">Email de Google</label>
+      <input id="email" name="email" type="email" required placeholder="usuario@dominio.com">
+    </div>
+    <div>
+      <label for="role">Perfil</label>
+      <select id="role" name="role" required>
+        <option value="readonly">read only (solo descarga)</option>
+        <option value="admin">admin full</option>
+      </select>
+    </div>
+    <div class="row" style="align-items: end;">
+      <button class="btn primary" type="submit">Guardar usuario</button>
+    </div>
+  </form>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Email</th>
+        <th>Rol</th>
+        <th>Alta</th>
+        <th>Actualización</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for user in users %}
+      <tr>
+        <td>{{ user.email }}</td>
+        <td>{{ user.role }}</td>
+        <td>{{ user.created_at }}</td>
+        <td>{{ user.updated_at }}</td>
+      </tr>
+      {% endfor %}
+      {% if not users %}
+      <tr>
+        <td colspan="4" class="small">No hay usuarios cargados.</td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

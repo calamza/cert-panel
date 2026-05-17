@@ -4,27 +4,51 @@ import sqlite3
 import subprocess
 import zipfile
 from datetime import datetime, timedelta, timezone
+from functools import wraps
 from pathlib import Path
 from threading import Lock
 
 from apscheduler.schedulers.background import BackgroundScheduler
+from authlib.integrations.flask_client import OAuth
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
-from flask import Flask, flash, redirect, render_template, request, send_file, url_for
+from dotenv import load_dotenv
+from flask import Flask, flash, g, redirect, render_template, request, send_file, session, url_for
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 DB_PATH = DATA_DIR / "domains.db"
 CREDENTIALS_DIR = BASE_DIR / "credentials"
+load_dotenv(BASE_DIR / ".env")
+
 CERTBOT_CONFIG_DIR = Path(os.getenv("CERTBOT_CONFIG_DIR", "/etc/letsencrypt"))
 CERTBOT_WORK_DIR = Path(os.getenv("CERTBOT_WORK_DIR", "/var/lib/letsencrypt"))
 CERTBOT_LOGS_DIR = Path(os.getenv("CERTBOT_LOGS_DIR", "/var/log/letsencrypt"))
 AUTO_RENEW_DAYS_BEFORE = int(os.getenv("AUTO_RENEW_DAYS_BEFORE", "30"))
 AUTO_RENEW_INTERVAL_HOURS = int(os.getenv("AUTO_RENEW_INTERVAL_HOURS", "12"))
+INITIAL_ALLOWED_USER_EMAIL = os.getenv("INITIAL_ALLOWED_USER_EMAIL", "").strip().lower()
+INITIAL_ALLOWED_USER_ROLE = os.getenv("INITIAL_ALLOWED_USER_ROLE", "admin").strip().lower()
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
+GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "").strip()
+GOOGLE_DISCOVERY_URL = os.getenv("GOOGLE_DISCOVERY_URL", "https://accounts.google.com/.well-known/openid-configuration")
+SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "false").strip().lower() == "true"
 
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "change-this-in-production")
+app.config["SESSION_COOKIE_HTTPONLY"] = True
+app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+app.config["SESSION_COOKIE_SECURE"] = SESSION_COOKIE_SECURE
 renew_lock = Lock()
+oauth = OAuth(app)
+
+if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET:
+    oauth.register(
+        name="google",
+        server_metadata_url=GOOGLE_DISCOVERY_URL,
+        client_id=GOOGLE_CLIENT_ID,
+        client_secret=GOOGLE_CLIENT_SECRET,
+        client_kwargs={"scope": "openid email profile"},
+    )
 
 
 def db_connection():
@@ -60,6 +84,34 @@ def init_storage():
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT NOT NULL UNIQUE,
+                role TEXT NOT NULL CHECK (role IN ('admin', 'readonly')),
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+
+    ensure_initial_user()
+
+
+def ensure_initial_user():
+    if not INITIAL_ALLOWED_USER_EMAIL:
+        return
+
+    role = INITIAL_ALLOWED_USER_ROLE if INITIAL_ALLOWED_USER_ROLE in {"admin", "readonly"} else "admin"
+    now = datetime.now(timezone.utc).isoformat()
+    with db_connection() as conn:
+        row = conn.execute("SELECT id FROM users WHERE email = ?", (INITIAL_ALLOWED_USER_EMAIL,)).fetchone()
+        if not row:
+            conn.execute(
+                "INSERT INTO users (email, role, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                (INITIAL_ALLOWED_USER_EMAIL, role, now, now),
+            )
 
 
 def sanitize_cert_name(domain_name: str) -> str:
@@ -200,6 +252,60 @@ def update_last_error(domain_id: int, message: str | None):
         )
 
 
+def get_user_by_email(email: str):
+    with db_connection() as conn:
+        return conn.execute("SELECT * FROM users WHERE email = ?", (email.strip().lower(),)).fetchone()
+
+
+def current_user():
+    email = session.get("user_email")
+    if not email:
+        return None
+    return get_user_by_email(email)
+
+
+def login_required(view_func):
+    @wraps(view_func)
+    def wrapped(*args, **kwargs):
+        if not g.user:
+            flash("Necesitás iniciar sesión con Google.", "error")
+            return redirect(url_for("login"))
+        return view_func(*args, **kwargs)
+
+    return wrapped
+
+
+def admin_required(view_func):
+    @wraps(view_func)
+    def wrapped(*args, **kwargs):
+        if not g.user:
+            flash("Necesitás iniciar sesión con Google.", "error")
+            return redirect(url_for("login"))
+        if g.user["role"] != "admin":
+            flash("No tenés permisos para esta acción.", "error")
+            return redirect(url_for("index"))
+        return view_func(*args, **kwargs)
+
+    return wrapped
+
+
+def can_manage() -> bool:
+    return bool(g.user and g.user["role"] == "admin")
+
+
+@app.before_request
+def load_user_context():
+    g.user = current_user()
+
+
+@app.context_processor
+def inject_user_context():
+    return {
+        "logged_user": g.user,
+        "can_manage": can_manage(),
+    }
+
+
 def monitor_and_renew():
     if not renew_lock.acquire(blocking=False):
         return
@@ -219,11 +325,68 @@ def monitor_and_renew():
 
 
 @app.route("/")
+@login_required
 def index():
     return render_template("index.html", domains=list_domains(), renew_days=AUTO_RENEW_DAYS_BEFORE)
 
 
+@app.get("/login")
+def login():
+    if g.user:
+        return redirect(url_for("index"))
+
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        flash("Falta configurar GOOGLE_CLIENT_ID y GOOGLE_CLIENT_SECRET en .env", "error")
+        return render_template("login.html")
+
+    return render_template("login.html")
+
+
+@app.get("/auth/google")
+def auth_google():
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        flash("Google OAuth no está configurado.", "error")
+        return redirect(url_for("login"))
+
+    redirect_uri = url_for("auth_google_callback", _external=True)
+    return oauth.google.authorize_redirect(redirect_uri)
+
+
+@app.get("/auth/google/callback")
+def auth_google_callback():
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        flash("Google OAuth no está configurado.", "error")
+        return redirect(url_for("login"))
+
+    token = oauth.google.authorize_access_token()
+    user_info = token.get("userinfo")
+    if not user_info:
+        user_info = oauth.google.userinfo()
+
+    email = (user_info.get("email") or "").strip().lower()
+    if not email:
+        flash("No se pudo obtener el email de Google.", "error")
+        return redirect(url_for("login"))
+
+    row = get_user_by_email(email)
+    if not row:
+        flash("Tu cuenta no tiene acceso a esta plataforma.", "error")
+        return redirect(url_for("login"))
+
+    session["user_email"] = email
+    flash("Sesión iniciada correctamente.", "success")
+    return redirect(url_for("index"))
+
+
+@app.post("/logout")
+def logout():
+    session.clear()
+    flash("Sesión cerrada.", "success")
+    return redirect(url_for("login"))
+
+
 @app.route("/domains/new", methods=["GET", "POST"])
+@admin_required
 def new_domain():
     if request.method == "POST":
         domain_name = normalize_domain(request.form.get("domain_name", ""))
@@ -282,6 +445,7 @@ def new_domain():
 
 
 @app.post("/domains/<int:domain_id>/issue")
+@admin_required
 def issue(domain_id: int):
     with db_connection() as conn:
         row = conn.execute("SELECT * FROM domains WHERE id = ?", (domain_id,)).fetchone()
@@ -302,6 +466,7 @@ def issue(domain_id: int):
 
 
 @app.post("/domains/<int:domain_id>/renew")
+@admin_required
 def renew(domain_id: int):
     with db_connection() as conn:
         row = conn.execute("SELECT * FROM domains WHERE id = ?", (domain_id,)).fetchone()
@@ -322,6 +487,7 @@ def renew(domain_id: int):
 
 
 @app.get("/domains/<int:domain_id>/download")
+@login_required
 def download(domain_id: int):
     with db_connection() as conn:
         row = conn.execute("SELECT * FROM domains WHERE id = ?", (domain_id,)).fetchone()
@@ -344,6 +510,38 @@ def download(domain_id: int):
     memory_file.seek(0)
     filename = f"{row['domain_name']}-certs.zip"
     return send_file(memory_file, as_attachment=True, download_name=filename, mimetype="application/zip")
+
+
+@app.route("/users", methods=["GET", "POST"])
+@admin_required
+def users():
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+        role = request.form.get("role", "readonly").strip().lower()
+        if role not in {"admin", "readonly"}:
+            flash("Rol inválido.", "error")
+            return redirect(url_for("users"))
+        if not email:
+            flash("El email es obligatorio.", "error")
+            return redirect(url_for("users"))
+
+        now = datetime.now(timezone.utc).isoformat()
+        with db_connection() as conn:
+            existing = conn.execute("SELECT id FROM users WHERE email = ?", (email,)).fetchone()
+            if existing:
+                conn.execute("UPDATE users SET role = ?, updated_at = ? WHERE email = ?", (role, now, email))
+                flash("Usuario actualizado.", "success")
+            else:
+                conn.execute(
+                    "INSERT INTO users (email, role, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                    (email, role, now, now),
+                )
+                flash("Usuario agregado.", "success")
+        return redirect(url_for("users"))
+
+    with db_connection() as conn:
+        rows = conn.execute("SELECT email, role, created_at, updated_at FROM users ORDER BY email").fetchall()
+    return render_template("users.html", users=rows)
 
 
 def boot_scheduler():
