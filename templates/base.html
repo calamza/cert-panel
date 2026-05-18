@@ -26,6 +26,17 @@
       margin: 24px auto;
       padding: 0 16px;
     }
+    .header-shell {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: start;
+      margin-bottom: 6px;
+    }
+    .header-actions {
+      text-align: right;
+      justify-self: end;
+    }
     .title {
       font-family: "Space Grotesk", "Segoe UI", sans-serif;
       font-size: 2rem;
@@ -77,8 +88,8 @@
     }
     table {
       width: 100%;
-      min-width: 1050px;
       border-collapse: collapse;
+      table-layout: fixed;
       font-size: 0.95rem;
     }
     th, td {
@@ -143,9 +154,9 @@
     }
     .action-grid {
       display: grid;
-      grid-template-columns: repeat(2, minmax(108px, 1fr));
+      grid-template-columns: repeat(2, minmax(0, 1fr));
       gap: 6px;
-      min-width: 230px;
+      min-width: 0;
     }
     .action-grid .btn {
       width: 100%;
@@ -160,6 +171,13 @@
     @media (max-width: 1100px) {
       .wrap {
         padding: 0 12px;
+      }
+      .header-shell {
+        grid-template-columns: 1fr;
+      }
+      .header-actions {
+        justify-self: start;
+        text-align: left;
       }
       .row {
         gap: 6px;
@@ -181,13 +199,13 @@
 </head>
 <body>
 <div class="wrap">
-  <div class="row" style="justify-content: space-between; margin-bottom: 6px;">
+  <div class="header-shell">
     <div>
       <h1 class="title" style="margin: 0;">Gestor de Certificados Let's Encrypt</h1>
       <p class="subtitle">Panel para dominios en Cloudflare y AWS Route53.</p>
     </div>
     {% if logged_user %}
-      <div style="text-align: right;">
+      <div class="header-actions">
         <div class="small" style="margin-bottom: 6px;">
           {{ logged_user.email }}
           <span class="tag {{ 'aws' if logged_user.role == 'admin' else 'cf' }}" style="margin-left: 4px;">{{ logged_user.role }}</span>
