@@ -1,6 +1,7 @@
 import io
 import os
 import re
+import shutil
 import smtplib
 import sqlite3
 import subprocess
@@ -681,6 +682,15 @@ def get_domain_by_id(domain_id: int):
         ).fetchone()
 
 
+def cert_name_in_use(cert_name: str):
+    with db_connection() as conn:
+        row = conn.execute(
+            "SELECT COUNT(1) AS total FROM domains WHERE cert_name = ?",
+            (cert_name,),
+        ).fetchone()
+    return int(row["total"] or 0) > 0
+
+
 def get_domain_usages(domain_id: int):
     with db_connection() as conn:
         return conn.execute(
@@ -729,17 +739,28 @@ def notification_recipients(domain_row):
     return recipients
 
 
+def sanitize_header_value(value: str):
+    # RFC mail headers cannot contain CR/LF characters.
+    return " ".join((value or "").replace("\r", " ").replace("\n", " ").split()).strip()
+
+
 def send_notification_email(subject: str, body: str, recipients: list[str]):
     if not SMTP_HOST or not SMTP_FROM or not recipients:
         return False, "SMTP no configurado o sin destinatarios"
 
-    msg = EmailMessage()
-    msg["Subject"] = subject
-    msg["From"] = SMTP_FROM
-    msg["To"] = ", ".join(recipients)
-    msg.set_content(body)
+    clean_subject = sanitize_header_value(subject) or "[Cert-Panel] Notificación"
+    clean_from = sanitize_header_value(SMTP_FROM)
+    clean_recipients = [sanitize_header_value(item) for item in recipients if sanitize_header_value(item)]
+    if not clean_recipients or not clean_from:
+        return False, "SMTP_FROM o destinatarios inválidos"
 
     try:
+        msg = EmailMessage()
+        msg["Subject"] = clean_subject
+        msg["From"] = clean_from
+        msg["To"] = ", ".join(clean_recipients)
+        msg.set_content(body or "")
+
         if SMTP_USE_SSL:
             server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=30)
         else:
@@ -754,6 +775,50 @@ def send_notification_email(subject: str, body: str, recipients: list[str]):
         return True, "ok"
     except Exception as exc:
         return False, str(exc)
+
+
+def remove_certbot_artifacts(cert_name: str):
+    cert_name_clean = sanitize_cert_name(cert_name)
+    cmd = [
+        "certbot",
+        "delete",
+        "--non-interactive",
+        "--cert-name",
+        cert_name_clean,
+        "--config-dir",
+        str(CERTBOT_CONFIG_DIR),
+        "--work-dir",
+        str(CERTBOT_WORK_DIR),
+        "--logs-dir",
+        str(CERTBOT_LOGS_DIR),
+    ]
+
+    certbot_ok = False
+    certbot_output = ""
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        certbot_ok = result.returncode == 0
+        certbot_output = ((result.stdout or "") + "\n" + (result.stderr or "")).strip()
+    except Exception as exc:
+        certbot_output = str(exc)
+
+    paths = [
+        CERTBOT_CONFIG_DIR / "live" / cert_name_clean,
+        CERTBOT_CONFIG_DIR / "archive" / cert_name_clean,
+        CERTBOT_CONFIG_DIR / "renewal" / f"{cert_name_clean}.conf",
+    ]
+    manual_removed = False
+    for path in paths:
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+            manual_removed = True
+        elif path.exists():
+            path.unlink(missing_ok=True)
+            manual_removed = True
+
+    ok = certbot_ok or manual_removed
+    detail = certbot_output[-300:] if certbot_output else "ok"
+    return ok, detail
 
 
 def update_notice_timestamps(domain_id: int, *, expiry_notice: bool = False, renew_notice: bool = False):
@@ -1268,10 +1333,21 @@ def delete_domain(domain_id: int):
         flash("Registro no encontrado.", "error")
         return redirect(url_for("index"))
 
+    cert_name = row["cert_name"]
+
     with db_connection() as conn:
         conn.execute("DELETE FROM domains WHERE id = ?", (domain_id,))
 
+    cleanup_ok = True
+    cleanup_detail = "ok"
+    if not cert_name_in_use(cert_name):
+        cleanup_ok, cleanup_detail = remove_certbot_artifacts(cert_name)
+
     flash(f"Se eliminó el registro {row['domain_name']}", "success")
+    if cleanup_ok:
+        flash(f"Se limpiaron artefactos del certificado {cert_name}.", "success")
+    else:
+        flash(f"No se pudo confirmar limpieza completa de {cert_name}: {cleanup_detail}", "error")
     return redirect(url_for("index"))
 
 
@@ -1281,19 +1357,29 @@ def cleanup_empty_domains():
     with db_connection() as conn:
         rows = conn.execute("SELECT id, cert_name FROM domains").fetchall()
 
-    to_delete_ids = []
+    to_delete = []
     for row in rows:
         if get_certificate_expiry(row["cert_name"]) is None:
-            to_delete_ids.append(row["id"])
+            to_delete.append((row["id"], row["cert_name"]))
 
-    if not to_delete_ids:
+    if not to_delete:
         flash("No había registros sin certificado emitido para limpiar.", "success")
         return redirect(url_for("index"))
 
     with db_connection() as conn:
-        conn.executemany("DELETE FROM domains WHERE id = ?", [(item_id,) for item_id in to_delete_ids])
+        conn.executemany("DELETE FROM domains WHERE id = ?", [(item_id,) for item_id, _ in to_delete])
 
-    flash(f"Se eliminaron {len(to_delete_ids)} registros sin certificado emitido.", "success")
+    cleanup_failures = 0
+    for _, cert_name in to_delete:
+        if cert_name_in_use(cert_name):
+            continue
+        ok, _ = remove_certbot_artifacts(cert_name)
+        if not ok:
+            cleanup_failures += 1
+
+    flash(f"Se eliminaron {len(to_delete)} registros sin certificado emitido.", "success")
+    if cleanup_failures:
+        flash(f"Advertencia: {cleanup_failures} certificados no pudieron limpiarse completamente.", "error")
     return redirect(url_for("index"))
 
 
