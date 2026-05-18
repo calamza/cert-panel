@@ -158,6 +158,9 @@
       gap: 8px;
       min-width: 256px;
     }
+    .action-grid > * {
+      min-width: 0;
+    }
     .action-grid .btn {
       display: flex;
       align-items: center;
@@ -168,9 +171,12 @@
       white-space: nowrap;
       font-size: 0.86rem;
       min-height: 34px;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .action-grid form {
       margin: 0;
+      min-width: 0;
     }
     @media (max-width: 1100px) {
       .wrap {
