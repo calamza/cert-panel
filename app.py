@@ -1185,6 +1185,30 @@ def migrate_legacy_credentials():
     return redirect(url_for("credentials"))
 
 
+@app.post("/notifications/test")
+@admin_required
+def send_test_notification():
+    now = datetime.now(timezone.utc).strftime("%d/%m/%Y %H:%M:%S UTC")
+    recipients = list(SMTP_TO)
+    if g.user and g.user["email"] and g.user["email"] not in recipients:
+        recipients.append(g.user["email"])
+
+    subject = "[Cert-Panel] Prueba de notificaciones SMTP"
+    body = (
+        "Este es un correo de prueba generado manualmente desde el panel.\n\n"
+        f"Fecha: {now}\n"
+        f"Usuario: {g.user['email'] if g.user else 'desconocido'}\n"
+    )
+
+    ok, detail = send_notification_email(subject, body, recipients)
+    if ok:
+        flash("Mail de prueba enviado correctamente.", "success")
+    else:
+        flash(f"No se pudo enviar el mail de prueba: {detail}", "error")
+
+    return redirect(url_for("index"))
+
+
 @app.route("/users", methods=["GET", "POST"])
 @admin_required
 def users():
