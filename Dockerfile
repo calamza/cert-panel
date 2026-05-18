@@ -12,7 +12,7 @@ RUN apt-get update \
 
 WORKDIR /app
 COPY requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir --retries 12 --timeout 180 -r requirements.txt
 
 COPY . .
 EXPOSE 8080
