@@ -333,7 +333,6 @@ def certbot_command(domain_row, renew=False):
         "--manual",
         "--preferred-challenges",
         "dns",
-        "--manual-public-ip-logging-ok",
         "--manual-auth-hook",
         f"python {DNS_AUTH_HOOK} --domain-id {domain_row['id']}",
         "--manual-cleanup-hook",
