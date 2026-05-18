@@ -23,6 +23,7 @@ BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 DB_PATH = DATA_DIR / "domains.db"
 CREDENTIALS_DIR = BASE_DIR / "credentials"
+SCRIPTS_DIR = BASE_DIR / "scripts"
 load_dotenv(BASE_DIR / ".env")
 
 CERTBOT_CONFIG_DIR = Path(os.getenv("CERTBOT_CONFIG_DIR", "/etc/letsencrypt"))
@@ -46,6 +47,9 @@ SMTP_FROM = os.getenv("SMTP_FROM", "").strip()
 SMTP_TO = [item.strip().lower() for item in os.getenv("SMTP_TO", "").split(",") if item.strip()]
 SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "true").strip().lower() == "true"
 SMTP_USE_SSL = os.getenv("SMTP_USE_SSL", "false").strip().lower() == "true"
+
+DNS_AUTH_HOOK = str(SCRIPTS_DIR / "dns_auth_hook.py")
+DNS_CLEANUP_HOOK = str(SCRIPTS_DIR / "dns_cleanup_hook.py")
 
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "change-this-in-production")
@@ -76,6 +80,7 @@ def db_connection():
 def init_storage():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     CREDENTIALS_DIR.mkdir(parents=True, exist_ok=True)
+    SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
     CERTBOT_CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     CERTBOT_WORK_DIR.mkdir(parents=True, exist_ok=True)
     CERTBOT_LOGS_DIR.mkdir(parents=True, exist_ok=True)
@@ -164,8 +169,25 @@ def init_storage():
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS certificate_domains (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                domain_id INTEGER NOT NULL,
+                base_domain TEXT NOT NULL,
+                provider TEXT NOT NULL CHECK (provider IN ('cloudflare', 'aws')),
+                credential_id INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(domain_id, base_domain),
+                FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE,
+                FOREIGN KEY (credential_id) REFERENCES dns_credentials(id)
+            )
+            """
+        )
 
     ensure_initial_user()
+    ensure_certificate_domain_specs()
 
 
 def ensure_initial_user():
@@ -181,6 +203,32 @@ def ensure_initial_user():
                 "INSERT INTO users (email, role, created_at, updated_at) VALUES (?, ?, ?, ?)",
                 (INITIAL_ALLOWED_USER_EMAIL, role, now, now),
             )
+
+
+def ensure_certificate_domain_specs():
+    now = datetime.now(timezone.utc).isoformat()
+    with db_connection() as conn:
+        rows = conn.execute("SELECT id, domain_name, provider, credential_id FROM domains").fetchall()
+        for row in rows:
+            existing = conn.execute(
+                "SELECT id FROM certificate_domains WHERE domain_id = ? LIMIT 1",
+                (row["id"],),
+            ).fetchone()
+            if existing:
+                continue
+
+            domains = parse_domain_names(row["domain_name"]) or [normalize_domain(row["domain_name"])]
+            for domain_item in domains:
+                if not domain_item:
+                    continue
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO certificate_domains (
+                        domain_id, base_domain, provider, credential_id, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (row["id"], domain_item, row["provider"], row["credential_id"], now, now),
+                )
 
 
 def sanitize_cert_name(domain_name: str) -> str:
@@ -249,10 +297,33 @@ def write_cloudflare_credentials(domain_id: int, api_token: str):
 
 
 def certbot_command(domain_row, renew=False):
-    domains = build_domains(domain_row["domain_name"], bool(domain_row["include_wildcard"]))
+    specs = get_certificate_domain_specs(domain_row["id"])
+    base_domains = [item["base_domain"] for item in specs] if specs else parse_domain_names(domain_row["domain_name"])
+    if not base_domains:
+        base_domains = [normalize_domain(domain_row["domain_name"])]
+
+    domains = []
+    seen = set()
+    for base_domain in base_domains:
+        requested = [base_domain]
+        if bool(domain_row["include_wildcard"]):
+            requested.append(f"*.{base_domain}")
+        for item in requested:
+            if item not in seen:
+                domains.append(item)
+                seen.add(item)
+
     base_cmd = [
         "certbot",
         "certonly",
+        "--manual",
+        "--preferred-challenges",
+        "dns",
+        "--manual-public-ip-logging-ok",
+        "--manual-auth-hook",
+        f"python {DNS_AUTH_HOOK} --domain-id {domain_row['id']}",
+        "--manual-cleanup-hook",
+        f"python {DNS_CLEANUP_HOOK} --domain-id {domain_row['id']}",
         "--non-interactive",
         "--agree-tos",
         "--email",
@@ -270,26 +341,6 @@ def certbot_command(domain_row, renew=False):
     if renew:
         base_cmd.append("--keep-until-expiring")
 
-    if domain_row["provider"] == "cloudflare":
-        cloudflare_api_token = domain_row["cred_cloudflare_api_token"] or domain_row["cloudflare_api_token"]
-        if not cloudflare_api_token:
-            raise ValueError(f"El dominio {domain_row['domain_name']} no tiene API token de Cloudflare configurado.")
-
-        cred_path = write_cloudflare_credentials(domain_row["id"], cloudflare_api_token)
-        base_cmd.extend(
-            [
-                "--dns-cloudflare",
-                "--dns-cloudflare-credentials",
-                str(cred_path),
-            ]
-        )
-    else:
-        aws_access_key_id = domain_row["cred_aws_access_key_id"] or domain_row["aws_access_key_id"]
-        aws_secret_access_key = domain_row["cred_aws_secret_access_key"] or domain_row["aws_secret_access_key"]
-        if not aws_access_key_id or not aws_secret_access_key:
-            raise ValueError(f"El dominio {domain_row['domain_name']} no tiene credenciales de AWS Route53 configuradas.")
-        base_cmd.append("--dns-route53")
-
     for item in domains:
         base_cmd.extend(["-d", item])
 
@@ -303,14 +354,6 @@ def run_certbot(domain_row, renew=False):
         return False, str(exc)
 
     env = os.environ.copy()
-
-    if domain_row["provider"] == "aws":
-        env["AWS_ACCESS_KEY_ID"] = domain_row["cred_aws_access_key_id"] or domain_row["aws_access_key_id"] or ""
-        env["AWS_SECRET_ACCESS_KEY"] = domain_row["cred_aws_secret_access_key"] or domain_row["aws_secret_access_key"] or ""
-        aws_region = domain_row["cred_aws_region"] or domain_row["aws_region"]
-        if aws_region:
-            env["AWS_DEFAULT_REGION"] = aws_region
-
     result = subprocess.run(cmd, capture_output=True, text=True, env=env)
     ok = result.returncode == 0
     output = (result.stdout or "") + "\n" + (result.stderr or "")
@@ -328,6 +371,7 @@ def list_domains():
                 c.aws_access_key_id AS cred_aws_access_key_id,
                 c.aws_secret_access_key AS cred_aws_secret_access_key,
                 c.aws_region AS cred_aws_region,
+                (SELECT COUNT(DISTINCT cd.provider) FROM certificate_domains cd WHERE cd.domain_id = d.id) AS providers_count,
                 (SELECT COUNT(1) FROM domain_usages u WHERE u.domain_id = d.id) AS usage_count,
                 (SELECT COUNT(1) FROM domain_recipients r WHERE r.domain_id = d.id) AS recipients_count
             FROM domains d
@@ -348,7 +392,7 @@ def list_domains():
             {
                 "id": row["id"],
                 "domain_name": row["domain_name"],
-                "provider": row["provider"],
+                "provider": "mixed" if int(row["providers_count"] or 0) > 1 else row["provider"],
                 "credential_name": row["credential_name"],
                 "usage_count": int(row["usage_count"] or 0),
                 "recipients_count": int(row["recipients_count"] or 0),
@@ -414,6 +458,53 @@ def get_credential_by_id(credential_id: int):
             """,
             (credential_id,),
         ).fetchone()
+
+
+def get_credential_by_name(provider: str, name: str):
+    with db_connection() as conn:
+        return conn.execute(
+            "SELECT * FROM dns_credentials WHERE provider = ? AND lower(name) = lower(?) LIMIT 1",
+            (provider, name.strip()),
+        ).fetchone()
+
+
+def get_certificate_domain_specs(domain_id: int):
+    with db_connection() as conn:
+        return conn.execute(
+            """
+            SELECT
+                cd.*,
+                c.cloudflare_api_token AS cred_cloudflare_api_token,
+                c.aws_access_key_id AS cred_aws_access_key_id,
+                c.aws_secret_access_key AS cred_aws_secret_access_key,
+                c.aws_region AS cred_aws_region,
+                d.cloudflare_api_token AS legacy_cloudflare_api_token,
+                d.aws_access_key_id AS legacy_aws_access_key_id,
+                d.aws_secret_access_key AS legacy_aws_secret_access_key,
+                d.aws_region AS legacy_aws_region
+            FROM certificate_domains cd
+            LEFT JOIN dns_credentials c ON c.id = cd.credential_id
+            JOIN domains d ON d.id = cd.domain_id
+            WHERE cd.domain_id = ?
+            ORDER BY cd.id
+            """,
+            (domain_id,),
+        ).fetchall()
+
+
+def resolve_credential_id(provider: str, credential_hint: str):
+    hint = (credential_hint or "").strip()
+    if not hint:
+        return None
+
+    if hint.isdigit():
+        row = get_credential_by_id(int(hint))
+        if row and row["provider"] == provider:
+            return row["id"]
+        return None
+
+    row = get_credential_by_name(provider, hint)
+    return row["id"] if row else None
 
 
 def get_legacy_domains_without_credential():
@@ -881,33 +972,80 @@ def new_domain():
         contact_email = request.form.get("contact_email", "").strip().lower()
         include_wildcard = 1 if request.form.get("include_wildcard") == "on" else 0
         credential_id_value = request.form.get("credential_id", "").strip()
+        domain_provider_map = request.form.get("domain_provider_map", "").strip()
 
-        if not domain_names or not provider or not contact_email or not credential_id_value:
-            flash("Completá dominios, proveedor, credencial DNS y email de contacto.", "error")
+        if not domain_names or not contact_email:
+            flash("Completá dominios y email de contacto.", "error")
             return redirect(url_for("new_domain"))
 
-        if provider not in {"cloudflare", "aws"}:
-            flash("Proveedor inválido.", "error")
-            return redirect(url_for("new_domain"))
+        domain_specs = []
+        domain_spec_map = {}
 
-        try:
-            credential_id = int(credential_id_value)
-        except ValueError:
-            flash("La credencial DNS seleccionada no es válida.", "error")
-            return redirect(url_for("new_domain"))
+        if provider and credential_id_value:
+            if provider not in {"cloudflare", "aws"}:
+                flash("Proveedor por defecto inválido.", "error")
+                return redirect(url_for("new_domain"))
+            default_credential_id = resolve_credential_id(provider, credential_id_value)
+            if not default_credential_id:
+                flash("La credencial DNS por defecto no es válida.", "error")
+                return redirect(url_for("new_domain"))
 
-        credential = get_credential_by_id(credential_id)
-        if not credential or credential["provider"] != provider:
-            flash("La credencial DNS seleccionada no corresponde al proveedor elegido.", "error")
-            return redirect(url_for("new_domain"))
+            for item in domain_names:
+                domain_spec_map[item] = {
+                    "base_domain": item,
+                    "provider": provider,
+                    "credential_id": default_credential_id,
+                }
+
+        if domain_provider_map:
+            for line in domain_provider_map.splitlines():
+                if not line.strip():
+                    continue
+                parts = [part.strip() for part in line.split("|")]
+                if len(parts) != 3:
+                    flash("Formato inválido en 'Proveedor por dominio'. Usá: dominio|proveedor|credencial", "error")
+                    return redirect(url_for("new_domain"))
+
+                base_domain = normalize_domain(parts[0])
+                map_provider = parts[1].lower()
+                credential_hint = parts[2]
+
+                if map_provider not in {"cloudflare", "aws"}:
+                    flash(f"Proveedor inválido en mapeo: {map_provider}", "error")
+                    return redirect(url_for("new_domain"))
+
+                credential_id = resolve_credential_id(map_provider, credential_hint)
+                if not credential_id:
+                    flash(f"No se encontró credencial '{credential_hint}' para proveedor {map_provider}.", "error")
+                    return redirect(url_for("new_domain"))
+
+                if base_domain not in domain_names:
+                    domain_names.append(base_domain)
+
+                domain_spec_map[base_domain] = {
+                    "base_domain": base_domain,
+                    "provider": map_provider,
+                    "credential_id": credential_id,
+                }
+
+        for item in domain_names:
+            if item not in domain_spec_map:
+                flash(
+                    f"Falta proveedor/credencial para {item}. Definí un valor por defecto o completá el mapeo por dominio.",
+                    "error",
+                )
+                return redirect(url_for("new_domain"))
+            domain_specs.append(domain_spec_map[item])
 
         now = datetime.now(timezone.utc).isoformat()
         primary_domain = domain_names[0]
         cert_name = sanitize_cert_name(primary_domain)
         domains_value = ",".join(domain_names)
+        first_provider = domain_specs[0]["provider"]
+        first_credential_id = domain_specs[0]["credential_id"]
 
         with db_connection() as conn:
-            conn.execute(
+            cursor = conn.execute(
                 """
                 INSERT INTO domains (
                     domain_name, provider, credential_id, contact_email, include_wildcard,
@@ -917,8 +1055,8 @@ def new_domain():
                 """,
                 (
                     domains_value,
-                    provider,
-                    credential_id,
+                    first_provider,
+                    first_credential_id,
                     contact_email,
                     include_wildcard,
                     cert_name,
@@ -926,9 +1064,26 @@ def new_domain():
                     now,
                 ),
             )
+            domain_id = cursor.lastrowid
+            for spec in domain_specs:
+                conn.execute(
+                    """
+                    INSERT INTO certificate_domains (
+                        domain_id, base_domain, provider, credential_id, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        domain_id,
+                        spec["base_domain"],
+                        spec["provider"],
+                        spec["credential_id"],
+                        now,
+                        now,
+                    ),
+                )
 
         flash(
-            f"Se guardó 1 certificado SAN con {len(domain_names)} dominios usando la credencial {credential['name']}.",
+            f"Se guardó 1 certificado SAN con {len(domain_names)} dominios.",
             "success",
         )
         return redirect(url_for("index"))

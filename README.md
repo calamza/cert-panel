@@ -17,6 +17,7 @@ Permite:
 - Descargar certificados (`fullchain`, `privkey`, `chain`, `cert`) en ZIP
 - Registrar dónde se usa cada certificado (sistema, IP, notas)
 - Configurar destinatarios de email por certificado
+- Mezclar dominios de Cloudflare y AWS Route53 en un mismo certificado SAN
 
 ## Requisitos
 
@@ -65,8 +66,8 @@ Panel: http://localhost:8080
 3. Cargar:
    - dominio base (sin `*.`)
    - email de contacto
-   - proveedor (`cloudflare` o `aws`)
-   - credenciales según proveedor
+   - proveedor/credencial por defecto (opcional)
+   - mapeo por dominio (opcional) con formato `dominio|proveedor|credencial`
    - opción wildcard si corresponde
 4. Guardar y luego hacer click en "Emitir"
 5. Descargar con "Descargar ZIP"
@@ -150,6 +151,19 @@ Cada certificado tiene un botón "Destinatarios" para definir emails específico
 
 - Se envía automáticamente cada `WEEKLY_STATUS_INTERVAL_DAYS`.
 - También se puede disparar manualmente con el botón "Enviar estado semanal".
+
+## SAN mixto por proveedor
+
+Podés emitir un certificado único con dominios en distintos proveedores DNS.
+
+Ejemplo de mapeo por dominio:
+
+```text
+grupoamericainterior.com.ar|cloudflare|Cloudflare Javier
+unomedios.com.ar|aws|AWS Produccion
+```
+
+Con wildcard activo, cada dominio suma también su `*.` en el mismo certificado.
 
 ## Próximos pasos recomendados
 

@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="card">
-  <form method="post">
+  <form method="post" id="domain-form">
     <div class="grid">
       <div>
         <label for="domain_names">Dominios (uno por línea o separados por coma)</label>
@@ -15,21 +15,45 @@
       </div>
 
       <div>
-        <label for="provider">Proveedor DNS</label>
-        <select id="provider" name="provider" required onchange="filterCredentials()">
+        <label for="provider">Proveedor DNS por defecto (opcional)</label>
+        <select id="provider" name="provider" onchange="filterCredentials()">
+          <option value="">Sin default</option>
           <option value="cloudflare">Cloudflare</option>
           <option value="aws">AWS Route53</option>
         </select>
       </div>
 
       <div>
-        <label for="credential_id">Credencial DNS preconfigurada</label>
-        <select id="credential_id" name="credential_id" required>
+        <label for="credential_id">Credencial DNS por defecto (opcional)</label>
+        <select id="credential_id" name="credential_id">
+          <option value="">Sin default</option>
           {% for cred in credentials %}
             <option value="{{ cred.id }}" data-provider="{{ cred.provider }}">{{ cred.name }} ({{ cred.provider }})</option>
           {% endfor %}
         </select>
-        <div class="small">Estas credenciales se administran en el menú "Credenciales DNS".</div>
+        <div class="small">Se usa para todos los dominios salvo que definas un mapeo por dominio.</div>
+      </div>
+
+      <div>
+        <label>Selector visual por dominio (opcional)</label>
+        <div class="small" style="margin-bottom:8px;">Escribí los dominios arriba y luego usá este selector para asignar proveedor/credencial por cada uno.</div>
+        <div class="table-wrap" style="border:1px solid var(--line); border-radius:10px; padding:8px;">
+          <table style="min-width:0; table-layout:auto;">
+            <thead>
+              <tr>
+                <th>Dominio</th>
+                <th>Proveedor</th>
+                <th>Credencial</th>
+              </tr>
+            </thead>
+            <tbody id="domain-map-body">
+              <tr>
+                <td colspan="3" class="small">Todavía no hay dominios para mapear.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <input type="hidden" id="domain_provider_map" name="domain_provider_map">
       </div>
 
       <div>
@@ -54,12 +78,135 @@
 </div>
 
 <script>
+  const credentialData = [
+    {% for cred in credentials %}
+      { id: "{{ cred.id }}", name: "{{ cred.name|e }}", provider: "{{ cred.provider }}" }{% if not loop.last %},{% endif %}
+    {% endfor %}
+  ];
+
+  function parseDomainsInput() {
+    const raw = document.getElementById('domain_names').value || '';
+    const tokens = raw.split(/[\n,;]+/).map(x => x.trim().toLowerCase()).filter(Boolean);
+    const unique = [];
+    const seen = new Set();
+    for (const token of tokens) {
+      const normalized = token.startsWith('*.') ? token.slice(2) : token;
+      if (!seen.has(normalized)) {
+        seen.add(normalized);
+        unique.push(normalized);
+      }
+    }
+    return unique;
+  }
+
+  function credentialOptionsFor(provider, selectedId) {
+    const opts = ['<option value="">Sin override (usa default)</option>'];
+    for (const cred of credentialData) {
+      if (cred.provider !== provider) continue;
+      const selected = selectedId === String(cred.id) ? 'selected' : '';
+      opts.push(`<option value="${cred.id}" ${selected}>${cred.name}</option>`);
+    }
+    return opts.join('');
+  }
+
+  function rebuildDomainMappingRows() {
+    const domains = parseDomainsInput();
+    const body = document.getElementById('domain-map-body');
+    const previous = {};
+
+    for (const row of body.querySelectorAll('tr[data-domain]')) {
+      const domain = row.getAttribute('data-domain');
+      const provider = row.querySelector('select[data-kind="provider"]').value;
+      const credential = row.querySelector('select[data-kind="credential"]').value;
+      previous[domain] = { provider, credential };
+    }
+
+    if (!domains.length) {
+      body.innerHTML = '<tr><td colspan="3" class="small">Todavía no hay dominios para mapear.</td></tr>';
+      return;
+    }
+
+    body.innerHTML = '';
+    for (const domain of domains) {
+      const state = previous[domain] || { provider: '', credential: '' };
+      const row = document.createElement('tr');
+      row.setAttribute('data-domain', domain);
+      row.innerHTML = `
+        <td>${domain}</td>
+        <td>
+          <select data-kind="provider" data-domain="${domain}">
+            <option value="">Usar default</option>
+            <option value="cloudflare" ${state.provider === 'cloudflare' ? 'selected' : ''}>Cloudflare</option>
+            <option value="aws" ${state.provider === 'aws' ? 'selected' : ''}>AWS Route53</option>
+          </select>
+        </td>
+        <td>
+          <select data-kind="credential" data-domain="${domain}">
+            <option value="">Sin override (usa default)</option>
+          </select>
+        </td>
+      `;
+      body.appendChild(row);
+    }
+
+    for (const providerSelect of body.querySelectorAll('select[data-kind="provider"]')) {
+      providerSelect.addEventListener('change', () => syncCredentialOptionsForRow(providerSelect));
+      syncCredentialOptionsForRow(providerSelect);
+    }
+  }
+
+  function syncCredentialOptionsForRow(providerSelect) {
+    const domain = providerSelect.getAttribute('data-domain');
+    const row = providerSelect.closest('tr');
+    const credentialSelect = row.querySelector('select[data-kind="credential"]');
+    const current = credentialSelect.value;
+    const provider = providerSelect.value;
+
+    if (!provider) {
+      credentialSelect.innerHTML = '<option value="">Sin override (usa default)</option>';
+      credentialSelect.value = '';
+      credentialSelect.disabled = true;
+      return;
+    }
+
+    credentialSelect.disabled = false;
+    credentialSelect.innerHTML = credentialOptionsFor(provider, current);
+    if (![...credentialSelect.options].some(o => o.value === current)) {
+      credentialSelect.value = '';
+    }
+  }
+
+  function serializeDomainMapping() {
+    const lines = [];
+    const body = document.getElementById('domain-map-body');
+    for (const row of body.querySelectorAll('tr[data-domain]')) {
+      const domain = row.getAttribute('data-domain');
+      const provider = row.querySelector('select[data-kind="provider"]').value;
+      const credential = row.querySelector('select[data-kind="credential"]').value;
+      if (!provider || !credential) continue;
+      lines.push(`${domain}|${provider}|${credential}`);
+    }
+    document.getElementById('domain_provider_map').value = lines.join('\n');
+  }
+
   function filterCredentials() {
     const provider = document.getElementById('provider').value;
     const select = document.getElementById('credential_id');
     let firstVisible = null;
 
+    if (!provider) {
+      for (const option of select.options) {
+        option.hidden = false;
+      }
+      select.disabled = false;
+      return;
+    }
+
     for (const option of select.options) {
+      if (!option.value) {
+        option.hidden = false;
+        continue;
+      }
       const visible = option.dataset.provider === provider;
       option.hidden = !visible;
       if (visible && !firstVisible) {
@@ -76,6 +223,10 @@
     }
   }
 
+  document.getElementById('domain_names').addEventListener('input', rebuildDomainMappingRows);
+  document.getElementById('domain-form').addEventListener('submit', serializeDomainMapping);
+
+  rebuildDomainMappingRows();
   filterCredentials();
 </script>
 {% endblock %}
