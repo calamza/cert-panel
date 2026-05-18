@@ -23,6 +23,7 @@
         <th>Proveedor</th>
         <th>Credencial DNS</th>
         <th>Dónde se usa</th>
+        <th>Destinatarios</th>
         <th>Vencimiento</th>
         <th>Wildcard</th>
         <th>Acciones</th>
@@ -59,6 +60,13 @@
           {% endif %}
         </td>
         <td>
+          {% if item.recipients_count > 0 %}
+            <span class="small">{{ item.recipients_count }} destinatario(s)</span>
+          {% else %}
+            <span class="small">Usa SMTP_TO/contacto por defecto</span>
+          {% endif %}
+        </td>
+        <td>
           {% if item.has_cert %}
             {{ item.expires_at.strftime('%d/%m/%Y %H:%M UTC') }}<br>
             <span class="small">{{ item.days_left }} días restantes</span>
@@ -77,6 +85,7 @@
                 <button class="btn" type="submit">Renovar</button>
               </form>
               <a class="btn" href="{{ url_for('domain_usages', domain_id=item.id) }}">Dónde se usa</a>
+              <a class="btn" href="{{ url_for('domain_recipients', domain_id=item.id) }}">Destinatarios</a>
               <form method="post" action="{{ url_for('delete_domain', domain_id=item.id) }}" onsubmit="return confirm('¿Eliminar este registro?');">
                 <button class="btn warn" type="submit">Eliminar</button>
               </form>
@@ -88,7 +97,7 @@
     {% endfor %}
     {% if not domains %}
       <tr>
-        <td colspan="7" class="small">Todavía no cargaste dominios.</td>
+        <td colspan="8" class="small">Todavía no cargaste dominios.</td>
       </tr>
     {% endif %}
     </tbody>

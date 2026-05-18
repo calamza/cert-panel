@@ -148,6 +148,9 @@
             <form method="post" action="{{ url_for('send_test_notification') }}" style="margin:0;">
               <button class="btn" type="submit">Probar SMTP</button>
             </form>
+            <form method="post" action="{{ url_for('send_weekly_status_now') }}" style="margin:0;">
+              <button class="btn" type="submit">Enviar estado semanal</button>
+            </form>
             <a class="btn" href="{{ url_for('credentials') }}">Credenciales DNS</a>
             <a class="btn" href="{{ url_for('users') }}">Usuarios</a>
           {% endif %}

@@ -13,8 +13,10 @@ Permite:
 - Incluir wildcard (`*.dominio...`) con un checkbox
 - Monitorear vencimientos y renovar automáticamente
 - Enviar alertas por email de renovación y vencimientos próximos
+- Enviar estado semanal de todos los certificados (automático y manual)
 - Descargar certificados (`fullchain`, `privkey`, `chain`, `cert`) en ZIP
 - Registrar dónde se usa cada certificado (sistema, IP, notas)
+- Configurar destinatarios de email por certificado
 
 ## Requisitos
 
@@ -101,6 +103,7 @@ Se guardan en el volumen `certs/letsencrypt`, estructura estándar de certbot:
 - `PUBLIC_BASE_URL`: URL pública usada para construir el callback OAuth
 - `AUTO_RENEW_DAYS_BEFORE`: umbral de renovación automática (default 15)
 - `AUTO_RENEW_INTERVAL_DAYS`: frecuencia del monitor (default 15 días)
+- `WEEKLY_STATUS_INTERVAL_DAYS`: frecuencia del reporte semanal (default 7 días)
 - `SMTP_HOST`: host SMTP para notificaciones
 - `SMTP_PORT`: puerto SMTP
 - `SMTP_USER`: usuario SMTP (opcional si relay sin auth)
@@ -136,6 +139,17 @@ Cada certificado tiene un panel de inventario de uso (botón "Dónde se usa") pa
 - notas
 
 Esta información también se incluye en emails de aviso para facilitar renovaciones operativas.
+
+## Destinatarios por certificado
+
+Cada certificado tiene un botón "Destinatarios" para definir emails específicos.
+- Si el certificado tiene destinatarios configurados, se envía solo a esos emails.
+- Si no tiene destinatarios configurados, usa `SMTP_TO` y el email de contacto del certificado.
+
+## Estado semanal
+
+- Se envía automáticamente cada `WEEKLY_STATUS_INTERVAL_DAYS`.
+- También se puede disparar manualmente con el botón "Enviar estado semanal".
 
 ## Próximos pasos recomendados
 

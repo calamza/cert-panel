@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2 style="margin-top:0;">Destinatarios por certificado</h2>
+  <p class="small" style="margin:0;">Certificado: {{ domain.domain_name }}</p>
+  <p class="small" style="margin:4px 0 0;">Cert name: {{ domain.cert_name }}</p>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Agregar destinatario</h3>
+  <form method="post" class="row" style="align-items: flex-end;">
+    <div style="flex: 1 1 300px;">
+      <label for="email">Email</label>
+      <input id="email" name="email" type="email" placeholder="ops@dominio.com" required>
+    </div>
+    <button class="btn primary" type="submit">Guardar</button>
+    <a class="btn" href="{{ url_for('index') }}">Volver</a>
+  </form>
+  <p class="small" style="margin-bottom:0;">Si no hay destinatarios cargados, se usa SMTP_TO + email de contacto del certificado.</p>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Destinatarios configurados</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Email</th>
+        <th>Alta</th>
+        <th>Acciones</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for rec in recipients %}
+      <tr>
+        <td>{{ rec.email }}</td>
+        <td class="small">{{ rec.created_at }}</td>
+        <td>
+          <form method="post" action="{{ url_for('delete_domain_recipient', domain_id=domain.id, recipient_id=rec.id) }}" onsubmit="return confirm('¿Eliminar destinatario?');">
+            <button class="btn warn" type="submit">Eliminar</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+      {% if not recipients %}
+      <tr>
+        <td colspan="3" class="small">No hay destinatarios cargados para este certificado.</td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

@@ -30,6 +30,7 @@ CERTBOT_WORK_DIR = Path(os.getenv("CERTBOT_WORK_DIR", "/var/lib/letsencrypt"))
 CERTBOT_LOGS_DIR = Path(os.getenv("CERTBOT_LOGS_DIR", "/var/log/letsencrypt"))
 AUTO_RENEW_DAYS_BEFORE = int(os.getenv("AUTO_RENEW_DAYS_BEFORE", "15"))
 AUTO_RENEW_INTERVAL_DAYS = int(os.getenv("AUTO_RENEW_INTERVAL_DAYS", "15"))
+WEEKLY_STATUS_INTERVAL_DAYS = int(os.getenv("WEEKLY_STATUS_INTERVAL_DAYS", "7"))
 INITIAL_ALLOWED_USER_EMAIL = os.getenv("INITIAL_ALLOWED_USER_EMAIL", "").strip().lower()
 INITIAL_ALLOWED_USER_ROLE = os.getenv("INITIAL_ALLOWED_USER_ROLE", "admin").strip().lower()
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
@@ -146,6 +147,19 @@ def init_storage():
                 notes TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
+                FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS domain_recipients (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                domain_id INTEGER NOT NULL,
+                email TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(domain_id, email),
                 FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
             )
             """
@@ -314,11 +328,10 @@ def list_domains():
                 c.aws_access_key_id AS cred_aws_access_key_id,
                 c.aws_secret_access_key AS cred_aws_secret_access_key,
                 c.aws_region AS cred_aws_region,
-                COUNT(u.id) AS usage_count
+                (SELECT COUNT(1) FROM domain_usages u WHERE u.domain_id = d.id) AS usage_count,
+                (SELECT COUNT(1) FROM domain_recipients r WHERE r.domain_id = d.id) AS recipients_count
             FROM domains d
             LEFT JOIN dns_credentials c ON c.id = d.credential_id
-            LEFT JOIN domain_usages u ON u.domain_id = d.id
-            GROUP BY d.id
             ORDER BY d.domain_name
             """
         ).fetchall()
@@ -338,6 +351,7 @@ def list_domains():
                 "provider": row["provider"],
                 "credential_name": row["credential_name"],
                 "usage_count": int(row["usage_count"] or 0),
+                "recipients_count": int(row["recipients_count"] or 0),
                 "contact_email": row["contact_email"],
                 "include_wildcard": bool(row["include_wildcard"]),
                 "cert_name": row["cert_name"],
@@ -546,6 +560,18 @@ def get_domain_usages(domain_id: int):
         ).fetchall()
 
 
+def get_domain_recipients(domain_id: int):
+    with db_connection() as conn:
+        return conn.execute(
+            "SELECT * FROM domain_recipients WHERE domain_id = ? ORDER BY email",
+            (domain_id,),
+        ).fetchall()
+
+
+def get_domain_recipient_emails(domain_id: int):
+    return [row["email"] for row in get_domain_recipients(domain_id)]
+
+
 def usages_text_block(domain_id: int):
     usages = get_domain_usages(domain_id)
     if not usages:
@@ -565,10 +591,12 @@ def usages_text_block(domain_id: int):
 
 
 def notification_recipients(domain_row):
-    recipients = list(SMTP_TO)
-    contact = (domain_row["contact_email"] or "").strip().lower()
-    if contact and contact not in recipients:
-        recipients.append(contact)
+    recipients = get_domain_recipient_emails(domain_row["id"])
+    if not recipients:
+        recipients = list(SMTP_TO)
+        contact = (domain_row["contact_email"] or "").strip().lower()
+        if contact and contact not in recipients:
+            recipients.append(contact)
     return recipients
 
 
@@ -653,6 +681,31 @@ def send_renewal_notice(domain_row, expires_at, outcome: str):
     ok, _ = send_notification_email(subject, body, recipients)
     if ok and outcome.lower() == "ok":
         update_notice_timestamps(domain_row["id"], renew_notice=True)
+
+
+def send_weekly_status_report(manual: bool = False, requested_by: str | None = None):
+    domains = list_domains()
+    if not domains:
+        return False, "No hay certificados cargados para reportar"
+
+    recipients = list(SMTP_TO)
+    if manual and requested_by and requested_by not in recipients:
+        recipients.append(requested_by)
+    if not recipients:
+        return False, "No hay destinatarios configurados en SMTP_TO"
+
+    lines = []
+    for item in domains:
+        expires_text = item["expires_at"].strftime("%d/%m/%Y %H:%M UTC") if item["expires_at"] else "Sin certificado emitido"
+        days_text = f"{item['days_left']} días" if item["days_left"] is not None else "n/a"
+        usages = usages_text_block(item["id"]).replace("\n", " | ")
+        lines.append(
+            f"- {item['domain_name']} | proveedor={item['provider']} | expira={expires_text} | restantes={days_text} | usos={usages}"
+        )
+
+    subject = "[Cert-Panel] Estado semanal de certificados"
+    body = "Reporte semanal de estado:\n\n" + "\n".join(lines)
+    return send_notification_email(subject, body, recipients)
 
 
 def parse_domain_names(raw_value: str):
@@ -986,6 +1039,51 @@ def domain_usages(domain_id: int):
     return render_template("domain_usages.html", domain=row, usages=get_domain_usages(domain_id))
 
 
+@app.route("/domains/<int:domain_id>/recipients", methods=["GET", "POST"])
+@admin_required
+def domain_recipients(domain_id: int):
+    row = get_domain_by_id(domain_id)
+    if not row:
+        flash("Registro no encontrado.", "error")
+        return redirect(url_for("index"))
+
+    if request.method == "POST":
+        email = request.form.get("email", "").strip().lower()
+        if not email:
+            flash("El email es obligatorio.", "error")
+            return redirect(url_for("domain_recipients", domain_id=domain_id))
+
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            with db_connection() as conn:
+                conn.execute(
+                    "INSERT INTO domain_recipients (domain_id, email, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                    (domain_id, email, now, now),
+                )
+            flash("Destinatario agregado.", "success")
+        except sqlite3.IntegrityError:
+            flash("Ese destinatario ya está configurado para este certificado.", "error")
+        return redirect(url_for("domain_recipients", domain_id=domain_id))
+
+    return render_template("domain_recipients.html", domain=row, recipients=get_domain_recipients(domain_id))
+
+
+@app.post("/domains/<int:domain_id>/recipients/<int:recipient_id>/delete")
+@admin_required
+def delete_domain_recipient(domain_id: int, recipient_id: int):
+    with db_connection() as conn:
+        deleted = conn.execute(
+            "DELETE FROM domain_recipients WHERE id = ? AND domain_id = ?",
+            (recipient_id, domain_id),
+        ).rowcount
+
+    if deleted:
+        flash("Destinatario eliminado.", "success")
+    else:
+        flash("Destinatario no encontrado.", "error")
+    return redirect(url_for("domain_recipients", domain_id=domain_id))
+
+
 @app.post("/domains/<int:domain_id>/usages/<int:usage_id>/delete")
 @admin_required
 def delete_domain_usage(domain_id: int, usage_id: int):
@@ -1209,6 +1307,18 @@ def send_test_notification():
     return redirect(url_for("index"))
 
 
+@app.post("/notifications/weekly-status")
+@admin_required
+def send_weekly_status_now():
+    requester = g.user["email"] if g.user else None
+    ok, detail = send_weekly_status_report(manual=True, requested_by=requester)
+    if ok:
+        flash("Estado semanal enviado correctamente.", "success")
+    else:
+        flash(f"No se pudo enviar el estado semanal: {detail}", "error")
+    return redirect(url_for("index"))
+
+
 @app.route("/users", methods=["GET", "POST"])
 @admin_required
 def users():
@@ -1244,6 +1354,7 @@ def users():
 def boot_scheduler():
     scheduler = BackgroundScheduler(daemon=True)
     scheduler.add_job(monitor_and_renew, "interval", days=AUTO_RENEW_INTERVAL_DAYS, id="renew-monitor")
+    scheduler.add_job(send_weekly_status_report, "interval", days=WEEKLY_STATUS_INTERVAL_DAYS, id="weekly-status")
     scheduler.start()
 
 
