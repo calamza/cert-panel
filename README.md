@@ -12,7 +12,9 @@ Permite:
 - Emitir certificados para `dominio.com`, `dominio.com.ar`, `dominio.ar`, etc.
 - Incluir wildcard (`*.dominio...`) con un checkbox
 - Monitorear vencimientos y renovar automáticamente
+- Enviar alertas por email de renovación y vencimientos próximos
 - Descargar certificados (`fullchain`, `privkey`, `chain`, `cert`) en ZIP
+- Registrar dónde se usa cada certificado (sistema, IP, notas)
 
 ## Requisitos
 
@@ -97,8 +99,16 @@ Se guardan en el volumen `certs/letsencrypt`, estructura estándar de certbot:
 - `FLASK_SECRET_KEY`: clave de sesión
 - `SESSION_COOKIE_SECURE`: `true` si corrés detrás de HTTPS
 - `PUBLIC_BASE_URL`: URL pública usada para construir el callback OAuth
-- `AUTO_RENEW_DAYS_BEFORE`: umbral de renovación automática (default 30)
-- `AUTO_RENEW_INTERVAL_HOURS`: frecuencia del monitor (default 12)
+- `AUTO_RENEW_DAYS_BEFORE`: umbral de renovación automática (default 15)
+- `AUTO_RENEW_INTERVAL_DAYS`: frecuencia del monitor (default 15 días)
+- `SMTP_HOST`: host SMTP para notificaciones
+- `SMTP_PORT`: puerto SMTP
+- `SMTP_USER`: usuario SMTP (opcional si relay sin auth)
+- `SMTP_PASSWORD`: password SMTP
+- `SMTP_FROM`: remitente de los correos
+- `SMTP_TO`: destinatarios fijos separados por coma
+- `SMTP_USE_TLS`: `true` para STARTTLS
+- `SMTP_USE_SSL`: `true` para SMTPS directo
 - `INITIAL_ALLOWED_USER_EMAIL`: email inicial con permiso
 - `INITIAL_ALLOWED_USER_ROLE`: `admin` o `readonly`
 - `GOOGLE_CLIENT_ID`: OAuth client id de Google
@@ -116,6 +126,16 @@ Si Google devuelve `Error 400: redirect_uri_mismatch`, verificá que:
 ## Runtime productivo
 
 La imagen Docker corre con Gunicorn (WSGI), no con el servidor de desarrollo de Flask.
+
+## Dónde se usa el certificado
+
+Cada certificado tiene un panel de inventario de uso (botón "Dónde se usa") para registrar:
+- sistema o servicio (ej: Zimbra)
+- tipo (ej: reverse-proxy)
+- IP/host (ej: 10.0.0.15)
+- notas
+
+Esta información también se incluye en emails de aviso para facilitar renovaciones operativas.
 
 ## Próximos pasos recomendados
 

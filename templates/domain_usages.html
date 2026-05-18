@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2 style="margin-top:0;">Dónde se usa este certificado</h2>
+  <p class="small" style="margin:0;">Certificado: {{ domain.domain_name }}</p>
+  <p class="small" style="margin:4px 0 0;">Cert name: {{ domain.cert_name }}</p>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Agregar uso</h3>
+  <form method="post" class="grid">
+    <div>
+      <label for="system_name">Sistema / servicio</label>
+      <input id="system_name" name="system_name" placeholder="Zimbra, Proxy reverso, Nginx, etc." required>
+    </div>
+    <div>
+      <label for="usage_type">Tipo</label>
+      <input id="usage_type" name="usage_type" placeholder="mail, reverse-proxy, webapp, api">
+    </div>
+    <div>
+      <label for="host_ip">IP / host</label>
+      <input id="host_ip" name="host_ip" placeholder="10.0.0.13">
+    </div>
+    <div>
+      <label for="notes">Notas</label>
+      <textarea id="notes" name="notes" rows="3" style="width:100%; box-sizing:border-box; border:1px solid var(--line); border-radius:10px; padding:10px; margin-bottom:12px; font-size:0.95rem;" placeholder="Detalles de instalación, ruta, contacto, etc."></textarea>
+    </div>
+    <div class="row">
+      <button class="btn primary" type="submit">Guardar uso</button>
+      <a class="btn" href="{{ url_for('index') }}">Volver</a>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Usos cargados</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Sistema</th>
+        <th>Tipo</th>
+        <th>IP / host</th>
+        <th>Notas</th>
+        <th>Acciones</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for usage in usages %}
+      <tr>
+        <td>{{ usage.system_name }}</td>
+        <td>{{ usage.usage_type or '-' }}</td>
+        <td>{{ usage.host_ip or '-' }}</td>
+        <td>{{ usage.notes or '-' }}</td>
+        <td>
+          <form method="post" action="{{ url_for('delete_domain_usage', domain_id=domain.id, usage_id=usage.id) }}" onsubmit="return confirm('¿Eliminar este uso?');">
+            <button class="btn warn" type="submit">Eliminar</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+      {% if not usages %}
+      <tr>
+        <td colspan="5" class="small">No hay usos cargados para este certificado.</td>
+      </tr>
+      {% endif %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

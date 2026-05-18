@@ -1,10 +1,12 @@
 import io
 import os
 import re
+import smtplib
 import sqlite3
 import subprocess
 import zipfile
 from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
 from functools import wraps
 from pathlib import Path
 from threading import Lock
@@ -26,8 +28,8 @@ load_dotenv(BASE_DIR / ".env")
 CERTBOT_CONFIG_DIR = Path(os.getenv("CERTBOT_CONFIG_DIR", "/etc/letsencrypt"))
 CERTBOT_WORK_DIR = Path(os.getenv("CERTBOT_WORK_DIR", "/var/lib/letsencrypt"))
 CERTBOT_LOGS_DIR = Path(os.getenv("CERTBOT_LOGS_DIR", "/var/log/letsencrypt"))
-AUTO_RENEW_DAYS_BEFORE = int(os.getenv("AUTO_RENEW_DAYS_BEFORE", "30"))
-AUTO_RENEW_INTERVAL_HOURS = int(os.getenv("AUTO_RENEW_INTERVAL_HOURS", "12"))
+AUTO_RENEW_DAYS_BEFORE = int(os.getenv("AUTO_RENEW_DAYS_BEFORE", "15"))
+AUTO_RENEW_INTERVAL_DAYS = int(os.getenv("AUTO_RENEW_INTERVAL_DAYS", "15"))
 INITIAL_ALLOWED_USER_EMAIL = os.getenv("INITIAL_ALLOWED_USER_EMAIL", "").strip().lower()
 INITIAL_ALLOWED_USER_ROLE = os.getenv("INITIAL_ALLOWED_USER_ROLE", "admin").strip().lower()
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "").strip()
@@ -35,6 +37,14 @@ GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "").strip()
 GOOGLE_DISCOVERY_URL = os.getenv("GOOGLE_DISCOVERY_URL", "https://accounts.google.com/.well-known/openid-configuration")
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").strip().rstrip("/")
 SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "false").strip().lower() == "true"
+SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER", "").strip()
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+SMTP_FROM = os.getenv("SMTP_FROM", "").strip()
+SMTP_TO = [item.strip().lower() for item in os.getenv("SMTP_TO", "").split(",") if item.strip()]
+SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "true").strip().lower() == "true"
+SMTP_USE_SSL = os.getenv("SMTP_USE_SSL", "false").strip().lower() == "true"
 
 app = Flask(__name__)
 app.secret_key = os.getenv("FLASK_SECRET_KEY", "change-this-in-production")
@@ -58,6 +68,7 @@ if GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET:
 def db_connection():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
@@ -93,6 +104,10 @@ def init_storage():
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(domains)").fetchall()}
         if "credential_id" not in columns:
             conn.execute("ALTER TABLE domains ADD COLUMN credential_id INTEGER")
+        if "last_expiry_notice_at" not in columns:
+            conn.execute("ALTER TABLE domains ADD COLUMN last_expiry_notice_at TEXT")
+        if "last_renew_notice_at" not in columns:
+            conn.execute("ALTER TABLE domains ADD COLUMN last_renew_notice_at TEXT")
 
         conn.execute(
             """
@@ -117,6 +132,21 @@ def init_storage():
                 role TEXT NOT NULL CHECK (role IN ('admin', 'readonly')),
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS domain_usages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                domain_id INTEGER NOT NULL,
+                system_name TEXT NOT NULL,
+                usage_type TEXT,
+                host_ip TEXT,
+                notes TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (domain_id) REFERENCES domains(id) ON DELETE CASCADE
             )
             """
         )
@@ -167,6 +197,15 @@ def get_certificate_expiry(cert_name: str):
     cert_data = fullchain.read_bytes()
     cert = x509.load_pem_x509_certificate(cert_data, default_backend())
     return cert.not_valid_after_utc
+
+
+def parse_iso_datetime(value: str | None):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 def build_domains(domain_name: str, include_wildcard: bool):
@@ -274,9 +313,12 @@ def list_domains():
                 c.cloudflare_api_token AS cred_cloudflare_api_token,
                 c.aws_access_key_id AS cred_aws_access_key_id,
                 c.aws_secret_access_key AS cred_aws_secret_access_key,
-                c.aws_region AS cred_aws_region
+                c.aws_region AS cred_aws_region,
+                COUNT(u.id) AS usage_count
             FROM domains d
             LEFT JOIN dns_credentials c ON c.id = d.credential_id
+            LEFT JOIN domain_usages u ON u.domain_id = d.id
+            GROUP BY d.id
             ORDER BY d.domain_name
             """
         ).fetchall()
@@ -295,6 +337,7 @@ def list_domains():
                 "domain_name": row["domain_name"],
                 "provider": row["provider"],
                 "credential_name": row["credential_name"],
+                "usage_count": int(row["usage_count"] or 0),
                 "contact_email": row["contact_email"],
                 "include_wildcard": bool(row["include_wildcard"]),
                 "cert_name": row["cert_name"],
@@ -484,13 +527,132 @@ def get_domain_by_id(domain_id: int):
                 c.cloudflare_api_token AS cred_cloudflare_api_token,
                 c.aws_access_key_id AS cred_aws_access_key_id,
                 c.aws_secret_access_key AS cred_aws_secret_access_key,
-                c.aws_region AS cred_aws_region
+                c.aws_region AS cred_aws_region,
+                d.last_expiry_notice_at,
+                d.last_renew_notice_at
             FROM domains d
             LEFT JOIN dns_credentials c ON c.id = d.credential_id
             WHERE d.id = ?
             """,
             (domain_id,),
         ).fetchone()
+
+
+def get_domain_usages(domain_id: int):
+    with db_connection() as conn:
+        return conn.execute(
+            "SELECT * FROM domain_usages WHERE domain_id = ? ORDER BY system_name",
+            (domain_id,),
+        ).fetchall()
+
+
+def usages_text_block(domain_id: int):
+    usages = get_domain_usages(domain_id)
+    if not usages:
+        return "Sin usos cargados."
+
+    lines = []
+    for item in usages:
+        segment = item["system_name"]
+        if item["usage_type"]:
+            segment += f" ({item['usage_type']})"
+        if item["host_ip"]:
+            segment += f" - IP {item['host_ip']}"
+        if item["notes"]:
+            segment += f" - {item['notes']}"
+        lines.append(f"- {segment}")
+    return "\n".join(lines)
+
+
+def notification_recipients(domain_row):
+    recipients = list(SMTP_TO)
+    contact = (domain_row["contact_email"] or "").strip().lower()
+    if contact and contact not in recipients:
+        recipients.append(contact)
+    return recipients
+
+
+def send_notification_email(subject: str, body: str, recipients: list[str]):
+    if not SMTP_HOST or not SMTP_FROM or not recipients:
+        return False, "SMTP no configurado o sin destinatarios"
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = SMTP_FROM
+    msg["To"] = ", ".join(recipients)
+    msg.set_content(body)
+
+    try:
+        if SMTP_USE_SSL:
+            server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=30)
+        else:
+            server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30)
+
+        with server:
+            if SMTP_USE_TLS and not SMTP_USE_SSL:
+                server.starttls()
+            if SMTP_USER:
+                server.login(SMTP_USER, SMTP_PASSWORD)
+            server.send_message(msg)
+        return True, "ok"
+    except Exception as exc:
+        return False, str(exc)
+
+
+def update_notice_timestamps(domain_id: int, *, expiry_notice: bool = False, renew_notice: bool = False):
+    sets = []
+    values = []
+    now = datetime.now(timezone.utc).isoformat()
+    if expiry_notice:
+        sets.append("last_expiry_notice_at = ?")
+        values.append(now)
+    if renew_notice:
+        sets.append("last_renew_notice_at = ?")
+        values.append(now)
+    if not sets:
+        return
+
+    values.append(domain_id)
+    with db_connection() as conn:
+        conn.execute(f"UPDATE domains SET {', '.join(sets)}, updated_at = ? WHERE id = ?", (*values[:-1], now, values[-1]))
+
+
+def send_expiry_warning(domain_row, expires_at, days_left: int):
+    last_notice = parse_iso_datetime(domain_row["last_expiry_notice_at"])
+    now = datetime.now(timezone.utc)
+    if last_notice and last_notice >= now - timedelta(days=1):
+        return
+
+    recipients = notification_recipients(domain_row)
+    if not recipients:
+        return
+
+    subject = f"[Cert-Panel] Certificado próximo a vencer: {domain_row['domain_name']}"
+    body = (
+        f"El certificado {domain_row['domain_name']} vence el {expires_at.strftime('%d/%m/%Y %H:%M UTC')}\n"
+        f"Días restantes: {days_left}\n\n"
+        f"Dónde está en uso:\n{usages_text_block(domain_row['id'])}\n"
+    )
+    ok, _ = send_notification_email(subject, body, recipients)
+    if ok:
+        update_notice_timestamps(domain_row["id"], expiry_notice=True)
+
+
+def send_renewal_notice(domain_row, expires_at, outcome: str):
+    recipients = notification_recipients(domain_row)
+    if not recipients:
+        return
+
+    subject = f"[Cert-Panel] Renovación {outcome}: {domain_row['domain_name']}"
+    expiry_text = expires_at.strftime('%d/%m/%Y %H:%M UTC') if expires_at else "no disponible"
+    body = (
+        f"Resultado de renovación para {domain_row['domain_name']}: {outcome}\n"
+        f"Nuevo vencimiento: {expiry_text}\n\n"
+        f"Dónde está en uso:\n{usages_text_block(domain_row['id'])}\n"
+    )
+    ok, _ = send_notification_email(subject, body, recipients)
+    if ok and outcome.lower() == "ok":
+        update_notice_timestamps(domain_row["id"], renew_notice=True)
 
 
 def parse_domain_names(raw_value: str):
@@ -574,10 +736,21 @@ def monitor_and_renew():
 
         for row in rows:
             expires_at = get_certificate_expiry(row["cert_name"])
-            should_renew = expires_at is None or expires_at <= datetime.now(timezone.utc) + timedelta(days=AUTO_RENEW_DAYS_BEFORE)
+            now = datetime.now(timezone.utc)
+            days_left = (expires_at - now).days if expires_at else -1
+
+            if expires_at and days_left <= AUTO_RENEW_DAYS_BEFORE:
+                send_expiry_warning(row, expires_at, days_left)
+
+            should_renew = expires_at is None or expires_at <= now + timedelta(days=AUTO_RENEW_DAYS_BEFORE)
             if should_renew:
                 ok, output = run_certbot(row, renew=True)
                 update_last_error(row["id"], None if ok else output[-4000:])
+                if ok:
+                    updated_expiry = get_certificate_expiry(row["cert_name"])
+                    send_renewal_notice(row, updated_expiry, "OK")
+                else:
+                    send_renewal_notice(row, expires_at, f"ERROR ({output[-200:]})")
     finally:
         renew_lock.release()
 
@@ -745,8 +918,11 @@ def renew(domain_id: int):
 
     if ok:
         flash(f"Renovación ejecutada para {row['domain_name']}", "success")
+        updated_expiry = get_certificate_expiry(row["cert_name"])
+        send_renewal_notice(row, updated_expiry, "OK")
     else:
         flash(f"Error renovando {row['domain_name']}. Revisá el detalle.", "error")
+        send_renewal_notice(row, get_certificate_expiry(row["cert_name"]), f"ERROR ({output[-200:]})")
 
     return redirect(url_for("index"))
 
@@ -774,6 +950,56 @@ def download(domain_id: int):
     memory_file.seek(0)
     filename = f"{row['domain_name']}-certs.zip"
     return send_file(memory_file, as_attachment=True, download_name=filename, mimetype="application/zip")
+
+
+@app.route("/domains/<int:domain_id>/usages", methods=["GET", "POST"])
+@admin_required
+def domain_usages(domain_id: int):
+    row = get_domain_by_id(domain_id)
+    if not row:
+        flash("Registro no encontrado.", "error")
+        return redirect(url_for("index"))
+
+    if request.method == "POST":
+        system_name = request.form.get("system_name", "").strip()
+        usage_type = request.form.get("usage_type", "").strip()
+        host_ip = request.form.get("host_ip", "").strip()
+        notes = request.form.get("notes", "").strip()
+
+        if not system_name:
+            flash("El nombre del sistema es obligatorio.", "error")
+            return redirect(url_for("domain_usages", domain_id=domain_id))
+
+        now = datetime.now(timezone.utc).isoformat()
+        with db_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO domain_usages (domain_id, system_name, usage_type, host_ip, notes, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (domain_id, system_name, usage_type or None, host_ip or None, notes or None, now, now),
+            )
+
+        flash("Uso agregado.", "success")
+        return redirect(url_for("domain_usages", domain_id=domain_id))
+
+    return render_template("domain_usages.html", domain=row, usages=get_domain_usages(domain_id))
+
+
+@app.post("/domains/<int:domain_id>/usages/<int:usage_id>/delete")
+@admin_required
+def delete_domain_usage(domain_id: int, usage_id: int):
+    with db_connection() as conn:
+        deleted = conn.execute(
+            "DELETE FROM domain_usages WHERE id = ? AND domain_id = ?",
+            (usage_id, domain_id),
+        ).rowcount
+
+    if deleted:
+        flash("Uso eliminado.", "success")
+    else:
+        flash("Uso no encontrado.", "error")
+    return redirect(url_for("domain_usages", domain_id=domain_id))
 
 
 @app.post("/domains/<int:domain_id>/delete")
@@ -993,7 +1219,7 @@ def users():
 
 def boot_scheduler():
     scheduler = BackgroundScheduler(daemon=True)
-    scheduler.add_job(monitor_and_renew, "interval", hours=AUTO_RENEW_INTERVAL_HOURS, id="renew-monitor")
+    scheduler.add_job(monitor_and_renew, "interval", days=AUTO_RENEW_INTERVAL_DAYS, id="renew-monitor")
     scheduler.start()
 
 
