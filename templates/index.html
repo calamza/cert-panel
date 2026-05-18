@@ -20,14 +20,14 @@
     <table>
       <thead>
         <tr>
-          <th>Dominio</th>
+          <th style="min-width: 220px;">Dominio</th>
           <th>Proveedor</th>
           <th>Credencial DNS</th>
           <th>Dónde se usa</th>
           <th>Destinatarios</th>
           <th>Vencimiento</th>
           <th>Wildcard</th>
-          <th>Acciones</th>
+          <th style="min-width: 320px;">Acciones</th>
         </tr>
       </thead>
       <tbody>
@@ -76,7 +76,7 @@
             {% endif %}
           </td>
           <td>{{ 'Sí' if item.include_wildcard else 'No' }}</td>
-          <td>
+          <td style="min-width: 320px;">
             <div class="action-grid">
               {% if can_manage %}
                 <form method="post" action="{{ url_for('issue', domain_id=item.id) }}">

@@ -22,7 +22,7 @@
       color: var(--ink);
     }
     .wrap {
-      max-width: 1100px;
+      max-width: 1320px;
       margin: 24px auto;
       padding: 0 16px;
     }
@@ -89,13 +89,13 @@
     table {
       width: 100%;
       border-collapse: collapse;
-      table-layout: fixed;
+      table-layout: auto;
       font-size: 0.95rem;
     }
     th, td {
       text-align: left;
       border-bottom: 1px solid var(--line);
-      padding: 10px 8px;
+      padding: 10px 10px;
       vertical-align: top;
       word-break: break-word;
     }
@@ -154,16 +154,20 @@
     }
     .action-grid {
       display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 6px;
-      min-width: 0;
+      grid-template-columns: repeat(2, minmax(138px, 1fr));
+      gap: 8px;
+      min-width: 292px;
     }
     .action-grid .btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
       width: 100%;
       text-align: center;
-      padding: 7px 8px;
+      padding: 8px 10px;
       white-space: nowrap;
-      font-size: 0.88rem;
+      font-size: 0.95rem;
+      min-height: 38px;
     }
     .action-grid form {
       margin: 0;
@@ -192,7 +196,7 @@
       }
       .action-grid {
         grid-template-columns: 1fr;
-        min-width: 140px;
+        min-width: 180px;
       }
     }
   </style>
