@@ -1,59 +1,12 @@
 {% extends "base.html" %}
 {% block content %}
 <div class="card">
-  <form method="post" id="domain-form">
+  <h2 style="margin-top:0;">Agregar certificado</h2>
+  <form method="post">
     <div class="grid">
-      <div>
-        <label for="domain_names">Dominios (uno por línea o separados por coma)</label>
-        <textarea id="domain_names" name="domain_names" rows="4" style="width:100%; box-sizing:border-box; border:1px solid var(--line); border-radius:10px; padding:10px; margin-bottom:12px; font-size:0.95rem;" required placeholder="confiber.com.ar\nmzadronagro.com.ar"></textarea>
-        <div class="small">Se emite un solo certificado SAN con todos estos dominios. No pongas *., eso lo controla la opción wildcard y se aplica a cada dominio cargado.</div>
-      </div>
-
       <div>
         <label for="contact_email">Email contacto Let's Encrypt</label>
         <input id="contact_email" name="contact_email" type="email" placeholder="admin@dominio.com" required>
-      </div>
-
-      <div>
-        <label for="provider">Proveedor DNS por defecto (opcional)</label>
-        <select id="provider" name="provider" onchange="filterCredentials()">
-          <option value="">Sin default</option>
-          <option value="cloudflare">Cloudflare</option>
-          <option value="aws">AWS Route53</option>
-        </select>
-      </div>
-
-      <div>
-        <label for="credential_id">Credencial DNS por defecto (opcional)</label>
-        <select id="credential_id" name="credential_id">
-          <option value="">Sin default</option>
-          {% for cred in credentials %}
-            <option value="{{ cred.id }}" data-provider="{{ cred.provider }}">{{ cred.name }} ({{ cred.provider }})</option>
-          {% endfor %}
-        </select>
-        <div class="small">Se usa para todos los dominios salvo que definas un mapeo por dominio.</div>
-      </div>
-
-      <div>
-        <label>Selector visual por dominio (opcional)</label>
-        <div class="small" style="margin-bottom:8px;">Escribí los dominios arriba y luego usá este selector para asignar proveedor/credencial por cada uno.</div>
-        <div class="table-wrap" style="border:1px solid var(--line); border-radius:10px; padding:8px;">
-          <table style="min-width:0; table-layout:auto;">
-            <thead>
-              <tr>
-                <th>Dominio</th>
-                <th>Proveedor</th>
-                <th>Credencial</th>
-              </tr>
-            </thead>
-            <tbody id="domain-map-body">
-              <tr>
-                <td colspan="3" class="small">Todavía no hay dominios para mapear.</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <input type="hidden" id="domain_provider_map" name="domain_provider_map">
       </div>
 
       <div>
@@ -62,70 +15,50 @@
           Emitir también wildcard (*.dominio)
         </label>
       </div>
+
+      <div style="grid-column: 1 / -1;">
+        <label>Seleccionar dominios DNS creados</label>
+        <div class="small" style="margin-bottom:8px;">Elegí uno o más dominios del catálogo. Podés administrarlos desde Dominios DNS.</div>
+        <div class="table-wrap" style="border:1px solid var(--line); border-radius:10px; padding:8px;">
+          <table style="min-width:0; table-layout:auto;">
+            <thead>
+              <tr>
+                <th></th>
+                <th>Dominio</th>
+                <th>Proveedor</th>
+                <th>Credencial</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for item in managed_domains %}
+              <tr>
+                <td><input type="checkbox" name="managed_domain_ids" value="{{ item.id }}"></td>
+                <td>{{ item.base_domain }}</td>
+                <td><span class="tag {{ 'cf' if item.provider == 'cloudflare' else 'aws' }}">{{ item.provider }}</span></td>
+                <td>{{ item.credential_name }}</td>
+              </tr>
+              {% endfor %}
+              {% if not managed_domains %}
+              <tr>
+                <td colspan="4" class="small">No hay dominios DNS cargados. Crealos primero en <a href="{{ url_for('dns_domains') }}">Dominios DNS</a>.</td>
+              </tr>
+              {% endif %}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
 
     <div class="row">
-      <button type="submit" class="btn primary">Guardar dominio</button>
+      <button type="submit" class="btn primary">Guardar certificado</button>
       <a href="{{ url_for('index') }}" class="btn">Volver</a>
     </div>
   </form>
-        <form method="post">
-  {% if not credentials %}
+
+  {% if not managed_domains %}
     <div class="flash error" style="margin-top:12px;">
-              <label for="contact_email">Email contacto Let's Encrypt</label>
-              <input id="contact_email" name="contact_email" type="email" placeholder="admin@dominio.com" required>
-
-<script>
-  const credentialData = [
-              <label>
-                <input type="checkbox" name="include_wildcard">
-                Emitir también wildcard (*.dominio)
-              </label>
-            </div>
-
-            <div style="grid-column: 1 / -1;">
-              <label>Seleccionar dominios DNS creados</label>
-              <div class="small" style="margin-bottom:8px;">Elegí uno o más dominios del catálogo. Podés administrarlos en el menú "Dominios DNS".</div>
-              <div class="table-wrap" style="border:1px solid var(--line); border-radius:10px; padding:8px;">
-                <table style="min-width:0; table-layout:auto;">
-                  <thead>
-                    <tr>
-                      <th></th>
-                      <th>Dominio</th>
-                      <th>Proveedor</th>
-                      <th>Credencial</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {% for item in managed_domains %}
-                    <tr>
-                      <td><input type="checkbox" name="managed_domain_ids" value="{{ item.id }}"></td>
-                      <td>{{ item.base_domain }}</td>
-                      <td><span class="tag {{ 'cf' if item.provider == 'cloudflare' else 'aws' }}">{{ item.provider }}</span></td>
-                      <td>{{ item.credential_name }}</td>
-                    </tr>
-                    {% endfor %}
-                    {% if not managed_domains %}
-                    <tr>
-                      <td colspan="4" class="small">No hay dominios DNS cargados. Crealos primero en <a href="{{ url_for('dns_domains') }}">Dominios DNS</a>.</td>
-                    </tr>
-                    {% endif %}
-                  </tbody>
-                </table>
-              </div>
-      return;
-      row.innerHTML = `
-        <td>${domain}</td>
-        <td>
-          <select data-kind="provider" data-domain="${domain}">
-            <option value="">Usar default</option>
-            <option value="cloudflare" ${state.provider === 'cloudflare' ? 'selected' : ''}>Cloudflare</option>
-            <option value="aws" ${state.provider === 'aws' ? 'selected' : ''}>AWS Route53</option>
-
-        {% if not managed_domains %}
-        <td>
-            No hay dominios DNS cargados. Primero agregá uno en <a href="{{ url_for('dns_domains') }}">Dominios DNS</a>.
-            <option value="">Sin override (usa default)</option>
-          </select>
-        </td>
-      const state = previous[domain] || { provider: '', credential: '' };
+      No hay dominios DNS cargados. Primero agregá uno en <a href="{{ url_for('dns_domains') }}">Dominios DNS</a>.
+    </div>
+  {% endif %}
+</div>
+{% endblock %}
