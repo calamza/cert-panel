@@ -69,68 +69,51 @@
       <a href="{{ url_for('index') }}" class="btn">Volver</a>
     </div>
   </form>
-
+        <form method="post">
   {% if not credentials %}
     <div class="flash error" style="margin-top:12px;">
-      No hay credenciales DNS cargadas. Primero agregá una en <a href="{{ url_for('credentials') }}">Credenciales DNS</a>.
-    </div>
-  {% endif %}
-</div>
+              <label for="contact_email">Email contacto Let's Encrypt</label>
+              <input id="contact_email" name="contact_email" type="email" placeholder="admin@dominio.com" required>
 
 <script>
   const credentialData = [
-    {% for cred in credentials %}
-      { id: "{{ cred.id }}", name: "{{ cred.name|e }}", provider: "{{ cred.provider }}" }{% if not loop.last %},{% endif %}
-    {% endfor %}
-  ];
+              <label>
+                <input type="checkbox" name="include_wildcard">
+                Emitir también wildcard (*.dominio)
+              </label>
+            </div>
 
-  function parseDomainsInput() {
-    const raw = document.getElementById('domain_names').value || '';
-    const tokens = raw.split(/[\n,;]+/).map(x => x.trim().toLowerCase()).filter(Boolean);
-    const unique = [];
-    const seen = new Set();
-    for (const token of tokens) {
-      const normalized = token.startsWith('*.') ? token.slice(2) : token;
-      if (!seen.has(normalized)) {
-        seen.add(normalized);
-        unique.push(normalized);
-      }
-    }
-    return unique;
-  }
-
-  function credentialOptionsFor(provider, selectedId) {
-    const opts = ['<option value="">Sin override (usa default)</option>'];
-    for (const cred of credentialData) {
-      if (cred.provider !== provider) continue;
-      const selected = selectedId === String(cred.id) ? 'selected' : '';
-      opts.push(`<option value="${cred.id}" ${selected}>${cred.name}</option>`);
-    }
-    return opts.join('');
-  }
-
-  function rebuildDomainMappingRows() {
-    const domains = parseDomainsInput();
-    const body = document.getElementById('domain-map-body');
-    const previous = {};
-
-    for (const row of body.querySelectorAll('tr[data-domain]')) {
-      const domain = row.getAttribute('data-domain');
-      const provider = row.querySelector('select[data-kind="provider"]').value;
-      const credential = row.querySelector('select[data-kind="credential"]').value;
-      previous[domain] = { provider, credential };
-    }
-
-    if (!domains.length) {
-      body.innerHTML = '<tr><td colspan="3" class="small">Todavía no hay dominios para mapear.</td></tr>';
+            <div style="grid-column: 1 / -1;">
+              <label>Seleccionar dominios DNS creados</label>
+              <div class="small" style="margin-bottom:8px;">Elegí uno o más dominios del catálogo. Podés administrarlos en el menú "Dominios DNS".</div>
+              <div class="table-wrap" style="border:1px solid var(--line); border-radius:10px; padding:8px;">
+                <table style="min-width:0; table-layout:auto;">
+                  <thead>
+                    <tr>
+                      <th></th>
+                      <th>Dominio</th>
+                      <th>Proveedor</th>
+                      <th>Credencial</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {% for item in managed_domains %}
+                    <tr>
+                      <td><input type="checkbox" name="managed_domain_ids" value="{{ item.id }}"></td>
+                      <td>{{ item.base_domain }}</td>
+                      <td><span class="tag {{ 'cf' if item.provider == 'cloudflare' else 'aws' }}">{{ item.provider }}</span></td>
+                      <td>{{ item.credential_name }}</td>
+                    </tr>
+                    {% endfor %}
+                    {% if not managed_domains %}
+                    <tr>
+                      <td colspan="4" class="small">No hay dominios DNS cargados. Crealos primero en <a href="{{ url_for('dns_domains') }}">Dominios DNS</a>.</td>
+                    </tr>
+                    {% endif %}
+                  </tbody>
+                </table>
+              </div>
       return;
-    }
-
-    body.innerHTML = '';
-    for (const domain of domains) {
-      const state = previous[domain] || { provider: '', credential: '' };
-      const row = document.createElement('tr');
-      row.setAttribute('data-domain', domain);
       row.innerHTML = `
         <td>${domain}</td>
         <td>
@@ -138,95 +121,11 @@
             <option value="">Usar default</option>
             <option value="cloudflare" ${state.provider === 'cloudflare' ? 'selected' : ''}>Cloudflare</option>
             <option value="aws" ${state.provider === 'aws' ? 'selected' : ''}>AWS Route53</option>
-          </select>
-        </td>
+
+        {% if not managed_domains %}
         <td>
-          <select data-kind="credential" data-domain="${domain}">
+            No hay dominios DNS cargados. Primero agregá uno en <a href="{{ url_for('dns_domains') }}">Dominios DNS</a>.
             <option value="">Sin override (usa default)</option>
           </select>
         </td>
-      `;
-      body.appendChild(row);
-    }
-
-    for (const providerSelect of body.querySelectorAll('select[data-kind="provider"]')) {
-      providerSelect.addEventListener('change', () => syncCredentialOptionsForRow(providerSelect));
-      syncCredentialOptionsForRow(providerSelect);
-    }
-  }
-
-  function syncCredentialOptionsForRow(providerSelect) {
-    const domain = providerSelect.getAttribute('data-domain');
-    const row = providerSelect.closest('tr');
-    const credentialSelect = row.querySelector('select[data-kind="credential"]');
-    const current = credentialSelect.value;
-    const provider = providerSelect.value;
-
-    if (!provider) {
-      credentialSelect.innerHTML = '<option value="">Sin override (usa default)</option>';
-      credentialSelect.value = '';
-      credentialSelect.disabled = true;
-      return;
-    }
-
-    credentialSelect.disabled = false;
-    credentialSelect.innerHTML = credentialOptionsFor(provider, current);
-    if (![...credentialSelect.options].some(o => o.value === current)) {
-      credentialSelect.value = '';
-    }
-  }
-
-  function serializeDomainMapping() {
-    const lines = [];
-    const body = document.getElementById('domain-map-body');
-    for (const row of body.querySelectorAll('tr[data-domain]')) {
-      const domain = row.getAttribute('data-domain');
-      const provider = row.querySelector('select[data-kind="provider"]').value;
-      const credential = row.querySelector('select[data-kind="credential"]').value;
-      if (!provider || !credential) continue;
-      lines.push(`${domain}|${provider}|${credential}`);
-    }
-    document.getElementById('domain_provider_map').value = lines.join('\n');
-  }
-
-  function filterCredentials() {
-    const provider = document.getElementById('provider').value;
-    const select = document.getElementById('credential_id');
-    let firstVisible = null;
-
-    if (!provider) {
-      for (const option of select.options) {
-        option.hidden = false;
-      }
-      select.disabled = false;
-      return;
-    }
-
-    for (const option of select.options) {
-      if (!option.value) {
-        option.hidden = false;
-        continue;
-      }
-      const visible = option.dataset.provider === provider;
-      option.hidden = !visible;
-      if (visible && !firstVisible) {
-        firstVisible = option;
-      }
-    }
-
-    if (firstVisible) {
-      select.value = firstVisible.value;
-      select.disabled = false;
-    } else {
-      select.value = '';
-      select.disabled = true;
-    }
-  }
-
-  document.getElementById('domain_names').addEventListener('input', rebuildDomainMappingRows);
-  document.getElementById('domain-form').addEventListener('submit', serializeDomainMapping);
-
-  rebuildDomainMappingRows();
-  filterCredentials();
-</script>
-{% endblock %}
+      const state = previous[domain] || { provider: '', credential: '' };

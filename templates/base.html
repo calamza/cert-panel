@@ -61,6 +61,16 @@
       flex-wrap: wrap;
       align-items: center;
     }
+    .top-nav {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: flex-end;
+    }
+    .top-nav form {
+      margin: 0;
+    }
     .btn {
       border: 1px solid var(--line);
       background: #fff;
@@ -70,6 +80,14 @@
       color: var(--ink);
       cursor: pointer;
       font-weight: 600;
+      height: 36px;
+      min-height: 36px;
+      box-sizing: border-box;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      line-height: 1;
+      font-size: 0.95rem;
     }
     .btn.primary {
       background: var(--accent);
@@ -115,6 +133,7 @@
     }
     .tag.cf { background: #fff3df; color: #8c4f00; }
     .tag.aws { background: #eef4ff; color: #154895; }
+    .tag.mixed { background: #f2f3f7; color: #4f5b66; }
     .flash {
       padding: 10px 12px;
       border-radius: 12px;
@@ -236,7 +255,7 @@
           {{ logged_user.email }}
           <span class="tag {{ 'aws' if logged_user.role == 'admin' else 'cf' }}" style="margin-left: 4px;">{{ logged_user.role }}</span>
         </div>
-        <div class="row" style="justify-content: flex-end;">
+        <div class="top-nav">
           <a class="btn" href="{{ url_for('index') }}">Inicio</a>
           {% if can_manage %}
             <form method="post" action="{{ url_for('send_test_notification') }}" style="margin:0;">
@@ -245,6 +264,7 @@
             <form method="post" action="{{ url_for('send_weekly_status_now') }}" style="margin:0;">
               <button class="btn" type="submit">Enviar estado semanal</button>
             </form>
+            <a class="btn" href="{{ url_for('dns_domains') }}">Dominios DNS</a>
             <a class="btn" href="{{ url_for('credentials') }}">Credenciales DNS</a>
             <a class="btn" href="{{ url_for('users') }}">Usuarios</a>
           {% endif %}

@@ -44,7 +44,7 @@
             {% endif %}
           </td>
           <td>
-            <span class="tag {{ 'cf' if item.provider == 'cloudflare' else ('aws' if item.provider == 'aws' else '') }}">{{ item.provider }}</span>
+            <span class="tag {{ 'cf' if item.provider == 'cloudflare' else ('aws' if item.provider == 'aws' else 'mixed') }}">{{ item.provider }}</span>
           </td>
           <td>
             {% if item.credential_name %}

@@ -185,6 +185,19 @@ def init_storage():
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS managed_dns_domains (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                base_domain TEXT NOT NULL UNIQUE,
+                provider TEXT NOT NULL CHECK (provider IN ('cloudflare', 'aws')),
+                credential_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (credential_id) REFERENCES dns_credentials(id)
+            )
+            """
+        )
 
     ensure_initial_user()
     ensure_certificate_domain_specs()
@@ -444,6 +457,31 @@ def get_credentials(provider: str | None = None):
             ORDER BY c.provider, c.name
             """
         ).fetchall()
+
+
+def get_managed_dns_domains():
+    with db_connection() as conn:
+        return conn.execute(
+            """
+            SELECT m.*, c.name AS credential_name
+            FROM managed_dns_domains m
+            JOIN dns_credentials c ON c.id = m.credential_id
+            ORDER BY m.base_domain
+            """
+        ).fetchall()
+
+
+def get_managed_dns_domain_by_id(domain_id: int):
+    with db_connection() as conn:
+        return conn.execute(
+            """
+            SELECT m.*, c.name AS credential_name
+            FROM managed_dns_domains m
+            JOIN dns_credentials c ON c.id = m.credential_id
+            WHERE m.id = ?
+            """,
+            (domain_id,),
+        ).fetchone()
 
 
 def get_credential_by_id(credential_id: int):
@@ -967,75 +1005,42 @@ def logout():
 @admin_required
 def new_domain():
     if request.method == "POST":
-        domain_names = parse_domain_names(request.form.get("domain_names", ""))
-        provider = request.form.get("provider", "").strip().lower()
+        selected_ids = request.form.getlist("managed_domain_ids")
         contact_email = request.form.get("contact_email", "").strip().lower()
         include_wildcard = 1 if request.form.get("include_wildcard") == "on" else 0
-        credential_id_value = request.form.get("credential_id", "").strip()
-        domain_provider_map = request.form.get("domain_provider_map", "").strip()
 
-        if not domain_names or not contact_email:
-            flash("Completá dominios y email de contacto.", "error")
+        if not selected_ids or not contact_email:
+            flash("Seleccioná al menos un dominio DNS y completá email de contacto.", "error")
             return redirect(url_for("new_domain"))
 
         domain_specs = []
-        domain_spec_map = {}
-
-        if provider and credential_id_value:
-            if provider not in {"cloudflare", "aws"}:
-                flash("Proveedor por defecto inválido.", "error")
-                return redirect(url_for("new_domain"))
-            default_credential_id = resolve_credential_id(provider, credential_id_value)
-            if not default_credential_id:
-                flash("La credencial DNS por defecto no es válida.", "error")
+        seen = set()
+        for selected_id in selected_ids:
+            if not selected_id.isdigit():
+                flash("Selección de dominio inválida.", "error")
                 return redirect(url_for("new_domain"))
 
-            for item in domain_names:
-                domain_spec_map[item] = {
-                    "base_domain": item,
-                    "provider": provider,
-                    "credential_id": default_credential_id,
+            mapped = get_managed_dns_domain_by_id(int(selected_id))
+            if not mapped:
+                flash("Uno de los dominios seleccionados ya no existe en el catálogo DNS.", "error")
+                return redirect(url_for("new_domain"))
+            if mapped["base_domain"] in seen:
+                continue
+
+            seen.add(mapped["base_domain"])
+            domain_specs.append(
+                {
+                    "base_domain": mapped["base_domain"],
+                    "provider": mapped["provider"],
+                    "credential_id": mapped["credential_id"],
                 }
+            )
 
-        if domain_provider_map:
-            for line in domain_provider_map.splitlines():
-                if not line.strip():
-                    continue
-                parts = [part.strip() for part in line.split("|")]
-                if len(parts) != 3:
-                    flash("Formato inválido en 'Proveedor por dominio'. Usá: dominio|proveedor|credencial", "error")
-                    return redirect(url_for("new_domain"))
+        if not domain_specs:
+            flash("No se pudo construir el certificado con los dominios seleccionados.", "error")
+            return redirect(url_for("new_domain"))
 
-                base_domain = normalize_domain(parts[0])
-                map_provider = parts[1].lower()
-                credential_hint = parts[2]
-
-                if map_provider not in {"cloudflare", "aws"}:
-                    flash(f"Proveedor inválido en mapeo: {map_provider}", "error")
-                    return redirect(url_for("new_domain"))
-
-                credential_id = resolve_credential_id(map_provider, credential_hint)
-                if not credential_id:
-                    flash(f"No se encontró credencial '{credential_hint}' para proveedor {map_provider}.", "error")
-                    return redirect(url_for("new_domain"))
-
-                if base_domain not in domain_names:
-                    domain_names.append(base_domain)
-
-                domain_spec_map[base_domain] = {
-                    "base_domain": base_domain,
-                    "provider": map_provider,
-                    "credential_id": credential_id,
-                }
-
-        for item in domain_names:
-            if item not in domain_spec_map:
-                flash(
-                    f"Falta proveedor/credencial para {item}. Definí un valor por defecto o completá el mapeo por dominio.",
-                    "error",
-                )
-                return redirect(url_for("new_domain"))
-            domain_specs.append(domain_spec_map[item])
+        domain_names = [item["base_domain"] for item in domain_specs]
 
         now = datetime.now(timezone.utc).isoformat()
         primary_domain = domain_names[0]
@@ -1088,8 +1093,8 @@ def new_domain():
         )
         return redirect(url_for("index"))
 
-    credentials = get_credentials()
-    return render_template("domain_form.html", credentials=credentials)
+    managed_domains = get_managed_dns_domains()
+    return render_template("domain_form.html", managed_domains=managed_domains)
 
 
 @app.post("/domains/<int:domain_id>/issue")
@@ -1290,6 +1295,121 @@ def cleanup_empty_domains():
 
     flash(f"Se eliminaron {len(to_delete_ids)} registros sin certificado emitido.", "success")
     return redirect(url_for("index"))
+
+
+@app.route("/dns-domains", methods=["GET", "POST"])
+@admin_required
+def dns_domains():
+    if request.method == "POST":
+        base_domain = normalize_domain(request.form.get("base_domain", ""))
+        provider = request.form.get("provider", "").strip().lower()
+        credential_id_value = request.form.get("credential_id", "").strip()
+
+        if not base_domain or provider not in {"cloudflare", "aws"} or not credential_id_value.isdigit():
+            flash("Completá dominio, proveedor y credencial DNS válidos.", "error")
+            return redirect(url_for("dns_domains"))
+
+        credential_id = int(credential_id_value)
+        credential = get_credential_by_id(credential_id)
+        if not credential or credential["provider"] != provider:
+            flash("La credencial elegida no corresponde al proveedor seleccionado.", "error")
+            return redirect(url_for("dns_domains"))
+
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            with db_connection() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO managed_dns_domains (base_domain, provider, credential_id, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (base_domain, provider, credential_id, now, now),
+                )
+            flash("Dominio DNS guardado.", "success")
+        except sqlite3.IntegrityError:
+            flash("Ese dominio ya está cargado en el catálogo DNS.", "error")
+
+        return redirect(url_for("dns_domains"))
+
+    edit_item = None
+    edit_id = request.args.get("edit_id", "").strip()
+    if edit_id:
+        if edit_id.isdigit():
+            edit_item = get_managed_dns_domain_by_id(int(edit_id))
+            if not edit_item:
+                flash("Dominio DNS a editar no encontrado.", "error")
+        else:
+            flash("Identificador de edición inválido.", "error")
+
+    return render_template(
+        "dns_domains.html",
+        items=get_managed_dns_domains(),
+        credentials=get_credentials(),
+        edit_item=edit_item,
+    )
+
+
+@app.post("/dns-domains/<int:item_id>/edit")
+@admin_required
+def edit_dns_domain(item_id: int):
+    row = get_managed_dns_domain_by_id(item_id)
+    if not row:
+        flash("Dominio DNS no encontrado.", "error")
+        return redirect(url_for("dns_domains"))
+
+    base_domain = normalize_domain(request.form.get("base_domain", ""))
+    provider = request.form.get("provider", "").strip().lower()
+    credential_id_value = request.form.get("credential_id", "").strip()
+
+    if not base_domain or provider not in {"cloudflare", "aws"} or not credential_id_value.isdigit():
+        flash("Completá dominio, proveedor y credencial DNS válidos.", "error")
+        return redirect(url_for("dns_domains", edit_id=item_id))
+
+    credential_id = int(credential_id_value)
+    credential = get_credential_by_id(credential_id)
+    if not credential or credential["provider"] != provider:
+        flash("La credencial elegida no corresponde al proveedor seleccionado.", "error")
+        return redirect(url_for("dns_domains", edit_id=item_id))
+
+    now = datetime.now(timezone.utc).isoformat()
+    try:
+        with db_connection() as conn:
+            conn.execute(
+                """
+                UPDATE managed_dns_domains
+                SET base_domain = ?, provider = ?, credential_id = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (base_domain, provider, credential_id, now, item_id),
+            )
+        flash("Dominio DNS actualizado.", "success")
+        return redirect(url_for("dns_domains"))
+    except sqlite3.IntegrityError:
+        flash("Ese dominio ya está cargado en el catálogo DNS.", "error")
+        return redirect(url_for("dns_domains", edit_id=item_id))
+
+
+@app.post("/dns-domains/<int:item_id>/delete")
+@admin_required
+def delete_dns_domain(item_id: int):
+    with db_connection() as conn:
+        row = conn.execute("SELECT id, base_domain FROM managed_dns_domains WHERE id = ?", (item_id,)).fetchone()
+        if not row:
+            flash("Dominio DNS no encontrado.", "error")
+            return redirect(url_for("dns_domains"))
+
+        used = conn.execute(
+            "SELECT 1 FROM certificate_domains WHERE base_domain = ? LIMIT 1",
+            (row["base_domain"],),
+        ).fetchone()
+        if used:
+            flash("No se puede eliminar: el dominio ya está en uso por uno o más certificados.", "error")
+            return redirect(url_for("dns_domains"))
+
+        conn.execute("DELETE FROM managed_dns_domains WHERE id = ?", (item_id,))
+
+    flash("Dominio DNS eliminado.", "success")
+    return redirect(url_for("dns_domains"))
 
 
 @app.route("/credentials", methods=["GET", "POST"])

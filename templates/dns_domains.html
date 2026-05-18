@@ -1,0 +1,153 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2 style="margin-top:0;">Dominios DNS</h2>
+  <p class="small">Catálogo base de dominios con su proveedor DNS y credencial asociada.</p>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Agregar dominio al catálogo</h3>
+  <form method="post" class="grid" id="dns-domain-form">
+    <div>
+      <label for="base_domain">Dominio base</label>
+      <input id="base_domain" name="base_domain" placeholder="ej: grupoamericainterior.com.ar" required>
+    </div>
+    <div>
+      <label for="provider">Proveedor DNS</label>
+      <select id="provider" name="provider" required>
+        <option value="cloudflare">Cloudflare</option>
+        <option value="aws">AWS Route53</option>
+      </select>
+    </div>
+    <div>
+      <label for="credential_id">Credencial DNS</label>
+      <select id="credential_id" name="credential_id" required>
+        {% for cred in credentials %}
+          <option value="{{ cred.id }}" data-provider="{{ cred.provider }}">{{ cred.name }} ({{ cred.provider }})</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="row" style="align-items:end;">
+      <button class="btn primary" type="submit">Guardar dominio DNS</button>
+    </div>
+  </form>
+</div>
+
+{% if edit_item %}
+<div class="card">
+  <h3 style="margin-top:0;">Editar dominio DNS</h3>
+  <form method="post" action="{{ url_for('edit_dns_domain', item_id=edit_item.id) }}" class="grid" id="dns-domain-edit-form">
+    <div>
+      <label for="edit_base_domain">Dominio base</label>
+      <input id="edit_base_domain" name="base_domain" value="{{ edit_item.base_domain }}" required>
+    </div>
+    <div>
+      <label for="edit_provider">Proveedor DNS</label>
+      <select id="edit_provider" name="provider" required>
+        <option value="cloudflare" {{ 'selected' if edit_item.provider == 'cloudflare' else '' }}>Cloudflare</option>
+        <option value="aws" {{ 'selected' if edit_item.provider == 'aws' else '' }}>AWS Route53</option>
+      </select>
+    </div>
+    <div>
+      <label for="edit_credential_id">Credencial DNS</label>
+      <select id="edit_credential_id" name="credential_id" required>
+        {% for cred in credentials %}
+          <option value="{{ cred.id }}" data-provider="{{ cred.provider }}" {{ 'selected' if cred.id == edit_item.credential_id else '' }}>{{ cred.name }} ({{ cred.provider }})</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="row" style="align-items:end;">
+      <button class="btn primary" type="submit">Guardar cambios</button>
+      <a class="btn" href="{{ url_for('dns_domains') }}">Cancelar</a>
+    </div>
+  </form>
+</div>
+{% endif %}
+
+<div class="card">
+  <h3 style="margin-top:0;">Dominios cargados</h3>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Dominio</th>
+          <th>Proveedor</th>
+          <th>Credencial</th>
+          <th>Acciones</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for item in items %}
+        <tr>
+          <td>{{ item.base_domain }}</td>
+          <td><span class="tag {{ 'cf' if item.provider == 'cloudflare' else 'aws' }}">{{ item.provider }}</span></td>
+          <td>{{ item.credential_name }}</td>
+          <td>
+            <div class="row">
+              <a class="btn" href="{{ url_for('dns_domains', edit_id=item.id) }}">Editar</a>
+              <form method="post" action="{{ url_for('delete_dns_domain', item_id=item.id) }}" onsubmit="return confirm('¿Eliminar dominio DNS?');">
+                <button class="btn warn" type="submit">Eliminar</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+      {% endfor %}
+      {% if not items %}
+        <tr><td colspan="4" class="small">No hay dominios en el catálogo.</td></tr>
+      {% endif %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+  function filterCatalogCredentials() {
+    const provider = document.getElementById('provider').value;
+    const select = document.getElementById('credential_id');
+    let firstVisible = null;
+
+    for (const option of select.options) {
+      const visible = option.dataset.provider === provider;
+      option.hidden = !visible;
+      if (visible && !firstVisible) firstVisible = option;
+    }
+
+    if (firstVisible) {
+      select.value = firstVisible.value;
+      select.disabled = false;
+    } else {
+      select.value = '';
+      select.disabled = true;
+    }
+  }
+
+  function filterCatalogEditCredentials() {
+    const providerInput = document.getElementById('edit_provider');
+    const select = document.getElementById('edit_credential_id');
+    if (!providerInput || !select) return;
+
+    const provider = providerInput.value;
+    let firstVisible = null;
+
+    for (const option of select.options) {
+      const visible = option.dataset.provider === provider;
+      option.hidden = !visible;
+      if (visible && !firstVisible) firstVisible = option;
+    }
+
+    if (![...select.options].some(o => !o.hidden && o.selected) && firstVisible) {
+      select.value = firstVisible.value;
+    }
+    select.disabled = !firstVisible;
+  }
+
+  document.getElementById('provider').addEventListener('change', filterCatalogCredentials);
+  filterCatalogCredentials();
+
+  const editProvider = document.getElementById('edit_provider');
+  if (editProvider) {
+    editProvider.addEventListener('change', filterCatalogEditCredentials);
+    filterCatalogEditCredentials();
+  }
+</script>
+{% endblock %}
