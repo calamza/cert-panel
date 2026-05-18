@@ -17,92 +17,92 @@
 
 <div class="card">
   <div class="table-wrap">
-  <table>
-    <thead>
-      <tr>
-        <th>Dominio</th>
-        <th>Proveedor</th>
-        <th>Credencial DNS</th>
-        <th>Dónde se usa</th>
-        <th>Destinatarios</th>
-        <th>Vencimiento</th>
-        <th>Wildcard</th>
-        <th>Acciones</th>
-      </tr>
-    </thead>
-    <tbody>
-    {% for item in domains %}
-      <tr>
-        <td class="cell-domain">
-          <strong>{{ item.domain_name }}</strong><br>
-          <span class="small">{{ item.contact_email }}</span>
-          {% if item.last_error %}
-            <details>
-              <summary class="small" style="color:#ad2b2b;cursor:pointer;">Ver último error</summary>
-              <div class="action-grid">
-            </details>
-          {% endif %}
-        </td>
-        <td>
-          <span class="tag {{ 'cf' if item.provider == 'cloudflare' else 'aws' }}">{{ item.provider }}</span>
-        </td>
-        <td>
-          {% if item.credential_name %}
-            <span class="small">{{ item.credential_name }}</span>
-          {% else %}
-            <span class="small">Sin credencial asignada</span>
-          {% endif %}
-        </td>
-                <a class="btn" href="{{ url_for('download', domain_id=item.id) }}">Descargar ZIP</a>
-          {% if item.usage_count > 0 %}
-            <span class="small">{{ item.usage_count }} uso(s)</span>
-          {% else %}
-            <span class="small">Sin usos</span>
-          {% endif %}
-        </td>
-        <td>
-          {% if item.recipients_count > 0 %}
-            <span class="small">{{ item.recipients_count }} destinatario(s)</span>
-          {% else %}
-            <span class="small">Usa SMTP_TO/contacto por defecto</span>
-          {% endif %}
-        </td>
-        <td>
-          {% if item.has_cert %}
-            {{ item.expires_at.strftime('%d/%m/%Y %H:%M UTC') }}<br>
-            <span class="small">{{ item.days_left }} días restantes</span>
-          {% else %}
-            <span class="small">Sin certificado emitido</span>
-          {% endif %}
-        </td>
-        <td>{{ 'Sí' if item.include_wildcard else 'No' }}</td>
-        <td>
-          <div class="row">
-            {% if can_manage %}
-              <form method="post" action="{{ url_for('issue', domain_id=item.id) }}">
-                <button class="btn" type="submit">Emitir</button>
-              </form>
-              <form method="post" action="{{ url_for('renew', domain_id=item.id) }}">
-                <button class="btn" type="submit">Renovar</button>
-              </form>
-              <a class="btn" href="{{ url_for('domain_usages', domain_id=item.id) }}">Dónde se usa</a>
-              <a class="btn" href="{{ url_for('domain_recipients', domain_id=item.id) }}">Destinatarios</a>
-              <form method="post" action="{{ url_for('delete_domain', domain_id=item.id) }}" onsubmit="return confirm('¿Eliminar este registro?');">
-                <button class="btn warn" type="submit">Eliminar</button>
-              </form>
+    <table>
+      <thead>
+        <tr>
+          <th>Dominio</th>
+          <th>Proveedor</th>
+          <th>Credencial DNS</th>
+          <th>Dónde se usa</th>
+          <th>Destinatarios</th>
+          <th>Vencimiento</th>
+          <th>Wildcard</th>
+          <th>Acciones</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for item in domains %}
+        <tr>
+          <td class="cell-domain">
+            <strong>{{ item.domain_name }}</strong>
+            <span class="small">{{ item.contact_email }}</span>
+            {% if item.last_error %}
+              <details>
+                <summary class="small" style="color:#ad2b2b;cursor:pointer;">Ver último error</summary>
+                <pre style="white-space: pre-wrap; font-size: 0.82rem;">{{ item.last_error }}</pre>
+              </details>
             {% endif %}
-            <a class="btn warn" href="{{ url_for('download', domain_id=item.id) }}">Descargar ZIP</a>
-          </div>
-        </td>
-      </tr>
-    {% endfor %}
-    {% if not domains %}
-      <tr>
-        <td colspan="8" class="small">Todavía no cargaste dominios.</td>
-      </tr>
-    {% endif %}
-    </tbody>
-  </table>
+          </td>
+          <td>
+            <span class="tag {{ 'cf' if item.provider == 'cloudflare' else 'aws' }}">{{ item.provider }}</span>
+          </td>
+          <td>
+            {% if item.credential_name %}
+              <span class="small">{{ item.credential_name }}</span>
+            {% else %}
+              <span class="small">Sin credencial asignada</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if item.usage_count > 0 %}
+              <span class="small">{{ item.usage_count }} uso(s)</span>
+            {% else %}
+              <span class="small">Sin usos</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if item.recipients_count > 0 %}
+              <span class="small">{{ item.recipients_count }} destinatario(s)</span>
+            {% else %}
+              <span class="small">Usa SMTP_TO/contacto por defecto</span>
+            {% endif %}
+          </td>
+          <td>
+            {% if item.has_cert %}
+              {{ item.expires_at.strftime('%d/%m/%Y %H:%M UTC') }}<br>
+              <span class="small">{{ item.days_left }} días restantes</span>
+            {% else %}
+              <span class="small">Sin certificado emitido</span>
+            {% endif %}
+          </td>
+          <td>{{ 'Sí' if item.include_wildcard else 'No' }}</td>
+          <td>
+            <div class="action-grid">
+              {% if can_manage %}
+                <form method="post" action="{{ url_for('issue', domain_id=item.id) }}">
+                  <button class="btn" type="submit">Emitir</button>
+                </form>
+                <form method="post" action="{{ url_for('renew', domain_id=item.id) }}">
+                  <button class="btn" type="submit">Renovar</button>
+                </form>
+                <a class="btn" href="{{ url_for('domain_usages', domain_id=item.id) }}">Dónde se usa</a>
+                <a class="btn" href="{{ url_for('domain_recipients', domain_id=item.id) }}">Destinatarios</a>
+                <form method="post" action="{{ url_for('delete_domain', domain_id=item.id) }}" onsubmit="return confirm('¿Eliminar este registro?');">
+                  <button class="btn warn" type="submit">Eliminar</button>
+                </form>
+              {% endif %}
+              <a class="btn" href="{{ url_for('download', domain_id=item.id) }}">Descargar ZIP</a>
+            </div>
+          </td>
+        </tr>
+      {% endfor %}
+      {% if not domains %}
+        <tr>
+          <td colspan="8" class="small">Todavía no cargaste dominios.</td>
+        </tr>
+      {% endif %}
+      </tbody>
+    </table>
   </div>
 </div>
 {% endblock %}
